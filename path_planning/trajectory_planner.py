@@ -21,6 +21,7 @@ class PathPlan(Node):
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         self.map_topic = self.get_parameter('map_topic').get_parameter_value().string_value
         self.initial_pose_topic = self.get_parameter('initial_pose_topic').get_parameter_value().string_value
+        
 
         self.map_sub = self.create_subscription(
             OccupancyGrid,
@@ -49,17 +50,25 @@ class PathPlan(Node):
         )
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
+        
+        # vars to store data from subs TODO set reasonable defaults
+        self.map_grid = None
+        self.goal_pose = None
+        self.crnt_pose = None
+
 
     def map_cb(self, msg):
-        raise NotImplementedError
+        self. map_grid = msg.OccupancyGrid #TODO
 
     def pose_cb(self, pose):
-        raise NotImplementedError
+        self.crnt_pose = pose.pose_coords #TODO
 
     def goal_cb(self, msg):
-        raise NotImplementedError
+        self.goal_pose =  msg.pose_coords #TODO
 
     def plan_path(self, start_point, end_point, map):
+        #TODO implement RRT*
+        
         self.traj_pub.publish(self.trajectory.toPoseArray())
         self.trajectory.publish_viz()
 
