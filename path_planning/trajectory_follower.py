@@ -18,9 +18,9 @@ class PurePursuit(Node):
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
 
-        self.lookahead = 0  # FILL IN #
-        self.speed = 0  # FILL IN #
-        self.wheelbase_length = 0  # FILL IN #
+        self.lookahead = 1  # FILL IN #
+        self.speed = 1  # FILL IN #
+        self.wheelbase_length = 1  # FILL IN : 15in ish??#
 
         self.trajectory = LineTrajectory("/followed_trajectory")
 
