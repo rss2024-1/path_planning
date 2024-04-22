@@ -30,123 +30,130 @@ class PurePursuit(Node):
                                                  "/trajectory/current",
                                                  self.trajectory_callback,
                                                  1)
-        self.follower_sub = self.create_subscription(Odometry, 
-                                                     self.odom_topic, 
-                                                     self.pose_callback, 
-                                                     1)
+
         self.drive_pub = self.create_publisher(AckermannDriveStamped,
-                                               self.drive_topic,
-                                               1)
-    
-    def closest_point(self, current_position):
-        # mentioned something about segments... not sure why we'd need segments...
-        # casting literally everything to np just in case
-        current_position = np.array([current_position.x, current_position.y])
-        # pts in the trajectory class rep as List[Tuple[float, float]], need to cast ig
-        trajectory_pts = np.array([np.asarray(point) for point in self.trajectory.points])
-        # self.get_logger().info(f'trajectory pts len: {len(trajectory_pts)}')
-        distances = np.linalg.norm(trajectory_pts - current_position, axis=1)
-        # get direct /euclidean distance btwn current pos and all trajectory pts
-        closest_idx = np.argmin(distances)
-        closest_dist = distances[closest_idx] #hmm do we need this??? just keep for now :p
-        closest_point = self.trajectory.points[closest_idx]
-        return closest_dist, closest_point, closest_idx
-
-    def is_progressing_along_path(self, pos, point):
-        ## not really sure if this is what they meant by making sure that 
-        ## we're going forwards in the path... may need to check this out...
-        pos_orientation = np.arctan2(pos.y, pos.x)
-        pt_orientation = np.arctan2(point[1]-pos.y, point[0]-pos.x)
-        return np.abs(pt_orientation-pos_orientation) < np.pi/2
-    
-    def calculate_curvature(p1, p2, p3):
-        # to get curve at p2 from 3 sample pts, courtesy of chatGPT :D
-        x1, y1 = p1
-        x2, y2 = p2
-        x3, y3 = p3
-
-        # Calculate the lengths of the sides of the triangle formed by the points
-        a = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-        b = np.sqrt((x3 - x2)**2 + (y3 - y2)**2)
-        c = np.sqrt((x3 - x1)**2 + (y3 - y1)**2)
-
-        # Calculate the radius of the circumcircle of the triangle
-        # If the points are collinear, return a large value to indicate a straight line
-        if a * b * c == 0:
-            return 1e6
-        else:
-            radius = (a * b * c) / np.sqrt((a + b + c) * (b + c - a) * (c + a - b) * (a + b - c))
-
-        # Calculate the curvature as the reciprocal of the radius
-        curvature = 1.0 / radius
-        return curvature
-
-
-    def lookahead_point(self, current_position):
-        closest_dist, closest_point, closest_idx = self.closest_point(current_position)
-        # create a circle around the car
-        circle_center = np.array([current_position.x, current_position.y])
-        circle_radius = self.lookahead # lookahead distance, change upstairs
-
-        ## adjusting radius based on path curvature intensity:
-        if 0 < closest_idx < len(self.trajectory.points)-1:
-            p1 = self.trajectory.points[closest_idx-1]
-            p2 = self.trajectory.points[closest_idx]
-            p3 = self.trajectory.points[closest_idx+1] 
-            # look at very small step from the current closest point and see how extreme the curve is
-            curvature = self.calculate_curvature(p1, p2, p3)
-            if curvature < 0.1: # pretty much straight...
-                circle_radius = self.lookahead*2
-            else: # terrible curving, need to scale down
-                circle_radius = self.lookahead/2
-
-        # look for the lookahead pt, intersection between circle and piecewise linear
-        # direction vector of the circle lookahead
-        circle_direction = np.diff(np.array(self.trajectory.points), axis=0)
-        circle_dir_norm = np.linalg.norm(circle_direction, axis=1)
-        circle_dir_unit = circle_direction / np.column_stack([circle_dir_norm, circle_dir_norm])
+                                                    self.drive_topic,
+                                                    1)
+        self.segments = None
         
-        # vector from center of circle to traj pts
-        d = np.array(self.trajectory.points) - circle_center
+    def find_min_distance_for_segment(self, row):
+        """
+        Helper function for Step 1: Find minimum distance for EACH segment
+        """
+        pt1_x, pt1_y, pt2_x, pt2_y, robot_x, robot_y = row
+        pt1 = np.array([[pt1_x, pt1_y]])
+        pt2 = np.array([[pt2_x, pt2_y]])
+        robot = np.array([[robot_x, robot_y]])
 
-        # projection onto circle direction to find closest pt on circle's path
-        projection_lens = np.sum(d*circle_dir_unit, axis=1)
-        projection_pts = np.column_stack([circle_center[0] + projection_lens * circle_dir_unit[:, 0],
-                                         circle_center[1] + projection_lens * circle_dir_unit[:, 1]])
-        
-        projection_dists = np.linalg.norm(projection_pts-circle_center, axis=1)
+        segment_len = np.linalg.norm(pt1, pt2)
+        if segment_len == 0:
+            return np.linalg.norm(pt1, robot) # any of the points works because segment has no len
+        t = max(0, min(1, np.dot(robot-pt1, pt2-pt1)/segment_len))
+        projection = pt1 + t*(pt2-pt1)
+        return np.linalg.norm(robot, projection)
 
-        intersection_indices = np.where(projection_dists <= circle_radius)[0]
-        if len(intersection_indices)>0:
-            for i in intersection_indices:
-                if self.is_progressing_along_path(current_position, self.trajectory.points[i]):
-                    return self.trajectory.points[i]
-        return self.trajectory.points[-1] 
-        # fallback only if no intersections, just return last point in trajectory...
-        # really bad, but only way to follow trajectory if no lookahead wrt car otherwise it stops everything
-        # maybe find another fallback implementation??
+    def find_min_distance_robot_to_segment(self, pose):
+        """
+        Step 1: Find segment index WITH the minimum distance, return the index
+        """
+        traj_pts = self.trajectory.points
+        position = pose.x, pose.y
+        robot_pts_array = np.vstack([np.array(position)] * (len(traj_pts) - 1))
+        segments = np.hstack((np.array(traj_pts[:-1]), np.array(traj_pts[1:]), robot_pts_array))
+
+        self.segments = segments
+
+        distances = np.apply_along_axis(self.find_min_distance_for_segment, 1, segments)
+        min_distance_index = np.argmin(distances)
+
+        return min_distance_index
+
+    def segment_iteration(self, pose, min_distance_index):
+        """
+        Step 2 of function: Iterate through every segment starting at min_distance_index
+        and see if we can find a valid goal point for each one of them
+        """
+        for i in range(min_distance_index, min_distance_index + 5):
+            segment = self.segments[i]
+            soln = self.compute_math_for_segment(pose, segment)
+            if soln:
+                return soln
+        self.get_logger().info(f"No solution found for segment {segment}")
+
     
-    def calc_steering_angle(self, current_position, lookahead_point):
-        # calculate angle to lookahead
-        dx = lookahead_point[0] - current_position.x
-        dy = lookahead_point[1] - current_position.y
-        th = np.arctan2(dy,dx)
-        lookahead_dist = np.sqrt(dx**2 + dy**2)
-        return np.arctan(2*self.wheelbase_length*np.sin(th)/lookahead_dist)
-    
-    def pose_callback(self, odometry_msg):
-        my_pose = odometry_msg.pose.pose
-        my_position = my_pose.position
-        my_orientation = my_pose.orientation # dunno if we really need this
-        # maybe useful to check that we're going forward along path?? idk
+    def check_angle(self, robot_angle, check_point, robot_point):
+        """Helper function for step 2"""
+        v = check_point-robot_point
+
+        rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
+                                    [np.sin(-robot_angle), np.cos(-robot_angle)]])
+        w = rotation_matrix @ v
+        return w>0
+
+
+    def compute_math_for_segment(self, pose, segment):
+        """
+        Helper function for Step 2
+        """
+        pt1_x, pt1_y, pt2_x, pt2_y = segment
+        pt1 = np.array([[pt1_x, pt1_y]])
+        pt2 = np.array([[pt2_x, pt2_y]])
+
+        robot_x, robot_y, angle = pose.x, pose.y, pose.orientation
+
+        from scipy import optimize
+
+        # Calculate the slope and y-intercept for the line
+        slope = (pt2_y - pt1_y) / (pt2_x - pt1_x)  # add EPSILON to avoid division by zero
+        y_intercept = pt1_y - slope * pt1_x
+
+        from sympy import symbols, Eq, solve
+
+        x, y = symbols('x y')
+
+        eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, )
+        eq2 = Eq(y - (slope * x + y_intercept), 0)
+
+        solutions = solve((eq1,eq2), (x, y))
+        print(solutions)
+        decimal_solutions = np.array([(sol[0].evalf(), sol[1].evalf()) for sol in solutions])
+
+        for soln in decimal_solutions:
+            if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
+                return soln
+        return False
+
+    def drive_angle(self, pose, goal_point):
+        """
+        Step 3: given a goal point and a pose, drive to it
+        """
+        dx = goal_point[0][0] - pose.x
+        dy = goal_point[0][1] - pose.y
+        return np.arctan(dy/dx)
+
+    def pose_callback(self, odom_msg):
+        pose = odom_msg.pose.pose
+        position = pose.position
+        orientation = pose.orientation
+
         if len(self.trajectory.points) == 0:
             return
         
-        lookahead_point = self.lookahead_point(my_position)
+        ### STEP 1
+        closest_segment_index = self.find_min_distance_robot_to_segment(position)
+
+        ### STEP 2
+        goal_point = self.segment_iteration(pose, closest_segment_index)
+        
+        ### STEP 3
+        driving_angle = self.drive_angle(pose, goal_point)
+
+        ### STEP 4
         drive_msg = AckermannDriveStamped()
         drive_msg.drive.speed = self.speed
-        drive_msg.drive.steering_angle = self.calc_steering_angle(my_position, lookahead_point)
+        drive_msg.drive.steering_angle = driving_angle
         self.drive_pub.publish(drive_msg)
+
 
     def trajectory_callback(self, msg):
         self.get_logger().info(f"Receiving new trajectory {len(msg.poses)} points")
@@ -158,28 +165,10 @@ class PurePursuit(Node):
         # flag, but where used??
         self.initialized_traj = True
 
-    def find_min_dist(pt1, pt2, robot):
-        """
-        pt1, pt2, robot: all 1x2 vectors
-        """
-        segment_len = np.linalg.norm(pt1, pt2)
-        if segment_len == 0:
-            return np.linalg.norm(pt1, robot) # any of the points works because segment has no len
-        t = max(0, min(1, np.dot(robot-pt1, pt2-pt1)/segment_len))
-        projection = pt1 + t*(pt2-pt1)
-        return np.linalg.norm(robot, projection)
-
-    def check_angle(self, robot_orientation, check_point, robot_point):
-        v = check_point-robot_point
-        robot_angle = robot_orientation.z # i think z is supposed to be the angle of the robot?
-        rotation_matrix = np.array([[np.cos(robot_angle), np.sin(robot_angle)],
-                                    [-np.sin(robot_angle), np.cos(robot_angle)]])
-        w = rotation_matrix @ v
-        return w > 0
+    ### STEP 1: Get current position of vehicle
 
 def main(args=None):
     rclpy.init(args=args)
     follower = PurePursuit()
     rclpy.spin(follower)
     rclpy.shutdown()
-
