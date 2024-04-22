@@ -2,6 +2,7 @@ import rclpy
 import numpy as np
 from ackermann_msgs.msg import AckermannDriveStamped
 from geometry_msgs.msg import PoseArray
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
 
 from .utils import LineTrajectory
@@ -29,6 +30,10 @@ class PurePursuit(Node):
                                                  "/trajectory/current",
                                                  self.trajectory_callback,
                                                  1)
+        self.follower_sub = self.create_subscription(Odometry, 
+                                                     self.odom_topic, 
+                                                     self.pose_callback, 
+                                                     1)
         self.drive_pub = self.create_publisher(AckermannDriveStamped,
                                                self.drive_topic,
                                                1)
