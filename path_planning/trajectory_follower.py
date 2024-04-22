@@ -139,8 +139,10 @@ class PurePursuit(Node):
         my_position = my_pose.position
         my_orientation = my_pose.orientation # dunno if we really need this
         # maybe useful to check that we're going forward along path?? idk
+        if len(self.trajectory.points) == 0:
+            return
+        
         lookahead_point = self.lookahead_point(my_position)
-
         drive_msg = AckermannDriveStamped()
         drive_msg.drive.speed = self.speed
         drive_msg.drive.steering_angle = self.calc_steering_angle(my_position, lookahead_point)
