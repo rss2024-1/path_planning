@@ -44,7 +44,7 @@ class PurePursuit(Node):
         current_position = np.array([current_position.x, current_position.y])
         # pts in the trajectory class rep as List[Tuple[float, float]], need to cast ig
         trajectory_pts = np.array([np.asarray(point) for point in self.trajectory.points])
-    
+        self.get_logger().info(f'trajectory pts len: {len(trajectory_pts)}')
         distances = np.linalg.norm(trajectory_pts - current_position, axis=1)
         # get direct /euclidean distance btwn current pos and all trajectory pts
         closest_idx = np.argmin(distances)
@@ -162,3 +162,4 @@ def main(args=None):
     follower = PurePursuit()
     rclpy.spin(follower)
     rclpy.shutdown()
+
