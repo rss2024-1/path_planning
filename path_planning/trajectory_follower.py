@@ -44,7 +44,7 @@ class PurePursuit(Node):
         current_position = np.array([current_position.x, current_position.y])
         # pts in the trajectory class rep as List[Tuple[float, float]], need to cast ig
         trajectory_pts = np.array([np.asarray(point) for point in self.trajectory.points])
-        self.get_logger().info(f'trajectory pts len: {len(trajectory_pts)}')
+        # self.get_logger().info(f'trajectory pts len: {len(trajectory_pts)}')
         distances = np.linalg.norm(trajectory_pts - current_position, axis=1)
         # get direct /euclidean distance btwn current pos and all trajectory pts
         closest_idx = np.argmin(distances)
@@ -158,6 +158,24 @@ class PurePursuit(Node):
         # flag, but where used??
         self.initialized_traj = True
 
+    def find_min_dist(pt1, pt2, robot):
+        """
+        pt1, pt2, robot: all 1x2 vectors
+        """
+        segment_len = np.linalg.norm(pt1, pt2)
+        if segment_len == 0:
+            return np.linalg.norm(pt1, robot) # any of the points works because segment has no len
+        t = max(0, min(1, np.dot(robot-pt1, pt2-pt1)/segment_len))
+        projection = pt1 + t*(pt2-pt1)
+        return np.linalg.norm(robot, projection)
+
+    def check_angle(self, robot_orientation, check_point, robot_point):
+        v = check_point-robot_point
+        robot_angle = robot_orientation.z # i think z is supposed to be the angle of the robot?
+        rotation_matrix = np.array([[np.cos(robot_angle), np.sin(robot_angle)],
+                                    [-np.sin(robot_angle), np.cos(robot_angle)]])
+        w = rotation_matrix @ v
+        return w > 0
 
 def main(args=None):
     rclpy.init(args=args)
