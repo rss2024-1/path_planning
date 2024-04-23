@@ -50,7 +50,7 @@ class PurePursuit(Node):
         pt2 = np.array([[pt2_x, pt2_y]])
         robot = np.array([[robot_x, robot_y]])
 
-        segment_len = np.linalg.norm(pt1, pt2)
+        segment_len = np.linalg.norm(pt1 - pt2)
         if segment_len == 0:
             return np.linalg.norm(pt1, robot) # any of the points works because segment has no len
         t = max(0, min(1, np.dot(robot-pt1, pt2-pt1)/segment_len))
