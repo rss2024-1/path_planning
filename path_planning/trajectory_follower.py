@@ -34,6 +34,11 @@ class PurePursuit(Node):
         self.drive_pub = self.create_publisher(AckermannDriveStamped,
                                                     self.drive_topic,
                                                     1)
+        self.odom_sub = self.create_subscription(Odometry, 
+                                                 self.odom_topic, 
+                                                 self.pose_callback, 
+                                                 1)
+
         self.segments = None
         
     def find_min_distance_for_segment(self, row):
