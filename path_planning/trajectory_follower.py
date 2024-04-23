@@ -1,10 +1,12 @@
 import rclpy
 import numpy as np
 from ackermann_msgs.msg import AckermannDriveStamped
+from visualization_msgs.msg import Marker
 from geometry_msgs.msg import PoseArray
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 import tf_transformations as tf
+from std_msgs.msg import Header
 
 from .utils import LineTrajectory
 
@@ -23,9 +25,10 @@ class PurePursuit(Node):
 
         self.odom_topic = "/odom"
         self.drive_topic = "/drive"
+        self.focal_point = "/focal_point"
 
-        self.lookahead = 1  # FILL IN #
-        self.speed = 1  # FILL IN #
+        self.lookahead = 0.25  # FILL IN #
+        self.speed = 1.0  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
         self.trajectory = LineTrajectory("/followed_trajectory")
@@ -42,6 +45,10 @@ class PurePursuit(Node):
                                                  self.odom_topic, 
                                                  self.pose_callback, 
                                                  1)
+        
+        self.focal_point_pub = self.create_publisher(Marker,
+                                                    self.focal_point,
+                                                    1)
 
         self.segments = None
         
@@ -88,7 +95,8 @@ class PurePursuit(Node):
             segment = self.segments[i]
             
             soln = self.compute_math_for_segment(pose, segment)
-            if soln:
+            if soln is not None:
+                self.get_logger().info(f"solution found for segment {segment}")
                 return soln
         self.get_logger().info(f"No solution found for segment {segment}")
 
@@ -104,7 +112,7 @@ class PurePursuit(Node):
         # self.get_logger().info(f"Value of v: {v}")
         # self.get_logger().info(f"Shape of v: {v.shape}")
         w = rotation_matrix @ v.T
-        return w>0
+        return w[0][0]>0
 
 
     def compute_math_for_segment(self, pose, segment):
@@ -136,18 +144,58 @@ class PurePursuit(Node):
             if soln[0].is_real and soln[1].is_real:
                 if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
                     return soln
-        self.get_logger().info(f"Pose: x={pose.x}, y={pose.y}, theta={pose.angle}")
-        self.get_logger().info(f"Segment: {segment}")
-        self.get_logger().info(f"Equations: {eq1}, {eq2}")
-        return False
+        # self.get_logger().info(f"Pose: x={pose.x}, y={pose.y}, theta={pose.angle}")
+        # self.get_logger().info(f"Segment: {segment}")
+        # self.get_logger().info(f"Equations: {eq1}, {eq2}")
+        return None
 
     def drive_angle(self, pose, goal_point):
         """
         Step 3: given a goal point and a pose, drive to it
         """
-        dx = goal_point[0][0] - pose.x
-        dy = goal_point[0][1] - pose.y
-        return np.arctan(dy/dx)
+        dx = goal_point[0] - pose.x
+        dy = goal_point[1] - pose.y
+        # self.get_logger().info(f"Value of dx: {dx}")
+        # self.get_logger().info(f"Value of dy: {dy}")
+        # self.get_logger().info(f"{type(dx)}")
+        # return np.arctan(float(dy)/float(dx))
+    
+    def publish_marker(self, point, duration=0.0, scale=0.1):
+        should_publish = True
+        # self.get_logger().info("Before Publishing start point")
+        # self.get_logger().info("Publishing goal point")
+        marker = Marker()
+        marker.header = self.make_header("/map")
+        marker.ns = "/goal_point"
+        marker.id = 0
+        marker.type = 2  # sphere
+        marker.lifetime = rclpy.duration.Duration(seconds=duration).to_msg()
+        if should_publish:
+            marker.action = 0
+            marker.pose.position.x = float(point[0])
+            marker.pose.position.y = float(point[1])
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 1.0
+            marker.scale.y = 1.0
+            marker.scale.z = 1.0
+            marker.color.r = 0.0
+            marker.color.g = 1.0
+            marker.color.b = 0.0
+            marker.color.a = 1.0
+        else:
+            # delete marker
+            marker.action = 2
+
+        self.focal_point_pub.publish(marker)
+
+    def make_header(self, frame_id, stamp=None):
+        if stamp == None:
+            stamp = self.get_clock().now().to_msg()
+        header = Header()
+        header.stamp = stamp
+        header.frame_id = frame_id
+        return header
+
 
     def pose_callback(self, odom_msg):
         odom_euler = tf.euler_from_quaternion((odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w))
@@ -167,9 +215,11 @@ class PurePursuit(Node):
 
         ### STEP 2
         goal_point = self.segment_iteration(pose, closest_segment_index)
+
         
         ### STEP 3
-        if goal_point != None:
+        if goal_point is not None:
+            self.publish_marker(goal_point)
             driving_angle = self.drive_angle(pose, goal_point)
 
             ### STEP 4
