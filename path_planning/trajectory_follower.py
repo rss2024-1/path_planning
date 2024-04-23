@@ -104,7 +104,7 @@ class PurePursuit(Node):
         # self.get_logger().info(f"Value of v: {v}")
         # self.get_logger().info(f"Shape of v: {v.shape}")
         w = rotation_matrix @ v.T
-        return w>0
+        return w[0]>0
 
 
     def compute_math_for_segment(self, pose, segment):
