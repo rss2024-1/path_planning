@@ -60,217 +60,12 @@ class PathPlan(Node):
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
 
-        self.current_pose = None
-        self.goal_pose = None
-        self.map_input = None
-        # self.RRT_tree = dict({self.current_pose: None})
-
-    
-    # def pose_to_xyth(self, pose): 
-    #     #
-    #     # Extract position
-    #     # try: 
-    #     #     position = pose.pose.pose.position
-    #     #     orientation = pose.pose.pose.orientation
-    #     # except: 
-    #     #     print('except!!')
-    #     #     position = pose.pose.position
-    #     #     orientation = pose.pose.orientation
-    #     position = pose.pose.position
-    #     orientation = pose.pose.orientation
-
-    #     x = position.x
-    #     y = position.y
-    #     # self.get_logger().info(f"x y is {x, y}")
-    #     # odom_euler = tf.euler_from_quaternion((orientation.x, orientation.y, orientation.z, orientation.w))
-    #     # self.get_logger().info(f"odom_quat is: {odom_euler}")
-    #     # th = odom_euler[2] # maybe negative of this?? idk??
-    #     q = [orientation.x,
-    #         orientation.y,
-    #         orientation.z,
-    #         orientation.w]
-    #     rotation_matrix = tf.quaternion_matrix(q)[:3, :3]
-    #     metric_coordinates = np.dot(rotation_matrix, np.array([x, y, 0]))
-        
-    #     # Apply the translation
-    #     x_real = metric_coordinates[0] - position.x
-    #     y_real = metric_coordinates[1] - position.y
-    #     #(-10, -1)
-
-    #     return (x_real, y_real)
-    
-    def pose_to_xyth(self, pose): 
-        position = pose.pose.position
-        orientation = pose.pose.orientation
-        x = position.x
-        y = position.y
-        return (x, y)
-    
-    # def pose_to_xyth(self, pose): 
-    #     position = pose.pose.position
-    #     orientation = pose.pose.orientation
-    
-    # def pixel_to_xy(self, coord, msg): 
-    #     # (msg.info.height, msg.info.width)
-    #     u, v = coord[0], coord[1]
-    #     resolution = msg.info.resolution
-    #     x= u*resolution
-    #     y= v*resolution
-    #     position = msg.info.origin.position
-    #     orientation = msg.info.origin.orientation
-
-    #     q = [orientation.x,
-    #         orientation.y,
-    #         orientation.z,
-    #         orientation.w]
-    #     rotation_matrix = tf.quaternion_matrix(q)[:3, :3]
-    #     metric_coordinates = np.dot(rotation_matrix, np.array([x, y, 0]))
-        
-    #     # Apply the translation
-    #     x_real = metric_coordinates[0] + position.x
-    #     y_real = metric_coordinates[1] + position.y
-
-    #     return (x_real, y_real)
-
-    def pixel_to_xy(self, coord, msg): 
-        u, v = coord[0], coord[1]
-        resolution = msg.info.resolution
-        position = msg.info.origin.position
-        orientation = msg.info.origin.orientation
-        x= u*resolution
-        y= v*resolution
-
-        q = [orientation.x,
-            orientation.y,
-            orientation.z,
-            orientation.w]
-        roll, pitch, yaw = tf.euler_from_quaternion(q)
-
-        # Apply the translation
-        x = x*np.cos(yaw) - y*np.sin(yaw)
-        y = x*np.sin(yaw) + y*np.cos(yaw)
-        x += position.x
-        y += position.y
-        return (x, y)
-    
-
-    # def pixel_to_xy(self, coord, msg):
-    #     """ Convert pixel coordinates (u, v) to real-world coordinates (x, y). """
-    #     u, v = coord
-    #     # Extract information from msg
-    #     resolution = msg.info.resolution
-    #     position = [msg.info.origin.position.x, msg.info.origin.position.y, 0]
-    #     orientation = [msg.info.origin.orientation.x, msg.info.origin.orientation.y, 
-    #                 msg.info.origin.orientation.z, msg.info.origin.orientation.w]
-        
-    #     # Create transformation matrix from quaternion and position
-    #     transformation_matrix = tf.quaternion_matrix(orientation)
-    #     transformation_matrix[0:3, 3] = position[0:3]
-        
-    #     # Scale pixel coordinates by resolution
-    #     pixel_coords = np.array([u * resolution, v * resolution, 0, 1])
-        
-    #     # Apply transformation
-    #     real_coords = transformation_matrix @ pixel_coords
-        
-    #     # Return real-world coordinates (ignore the homogeneous coordinate)
-    #     return real_coords[0], real_coords[1]
-
-        
-    # def xy_to_pixel(self, coord, msg): 
-    #     x, y = coord[0], coord[1]
-    #     position = msg.info.origin.position
-    #     orientation = msg.info.origin.orientation
-    #     resolution = msg.info.resolution
-
-    #     #cells to meters
-    #     u = (x - position.x)/resolution
-    #     v = (y - position.y)/resolution
-
-    #     # #
-    #     # T = np.array([[1, 0, tx], 
-    #     #               [0, 1, ty], 
-    #     #               [0, 0, 1]])
-    #     # np.linalg.inv()
-    #     return (u, v)
-    
-    def xy_to_pixel(self, coord, msg): 
-        x, y = coord[0], coord[1]
-        orientation = msg.info.origin.orientation
-        resolution = msg.info.resolution
-        map_x = msg.info.origin.position.x
-        map_y = msg.info.origin.position.y
-        
-        # transformation_matrix = tf.quaternion_matrix(orientation)
-        q = [orientation.x,
-            orientation.y,
-            orientation.z,
-            orientation.w]
-        roll, pitch, yaw = tf.euler_from_quaternion(q)
-
-        rotated_x = (x - map_x)*np.cos(yaw) - (y - map_y)*np.sin(yaw)
-        rotated_y = (x - map_x)*np.sin(yaw) + (y - map_y)*np.cos(yaw)
-
-        pixel_x = int(rotated_x/resolution)
-        pixel_y = int(rotated_y/resolution)
-
-        return pixel_x, pixel_y
-    # def xy_to_pixel(self, coord, msg): 
-    #     x, y = coord[0], coord[1]
-    #     # translation = msg.info.origin.position
-    #     orientation = msg.info.origin.orientation
-    #     position = [msg.info.origin.position.x, msg.info.origin.position.y, 0]
-    #     orientation = [orientation.x,
-    #         orientation.y,
-    #         orientation.z,
-    #         orientation.w]
-    #     resolution = msg.info.resolution
-    #     transformation_matrix = tf.quaternion_matrix(orientation)
-    #     transformation_matrix[0:3, 3] = position[0:3]
-
-    #     real_coords = np.array([x, y, 0, 1])
-
-    #     # Apply inverse transformation
-    #     inv_transformation_matrix = np.linalg.inv(transformation_matrix)
-    #     pixel_coords = inv_transformation_matrix @ real_coords
-
-    #     # Scale by inverse resolution
-    #     pixel_coords /= resolution
-
-    #     # return int(pixel_coords[0]), int(pixel_coords[1])
-    #     return int(pixel_coords[1]), int(pixel_coords[0])
-
-    
-    # def coord_to_pose(self, coord): 
-    #     x, y, th = coord
-    #     pose_msg = Pose() 
-    #     pose_msg.position.x = x
-    #     pose_msg.position.y = y
-    #     pose_msg.position.z = 0.0
-    #     quat = tf.quaternion_from_euler(0, 0, th)
-    #     pose_msg.orientation = Quaternion(x=quat[0], y=quat[1], z=quat [2], w=quat[3])
-    #     return pose_msg
-    
-    # def mappixel_to_xy(map_msg): 
-    #     u, v = coord[0], coord[1]
-    #     resolution = msg.info.resolution
-    #     x= u*resolution
-    #     y= v*resolution
-    #     position = msg.info.origin.position
-    #     orientation = msg.info.origin.orientation
-
-    #     q = [orientation.x,
-    #         orientation.y,
-    #         orientation.z,
-    #         orientation.w]
-    #     rotation_matrix = tf.quaternion_matrix(q)[:3, :3]
-    #     metric_coordinates = np.dot(rotation_matrix, np.array([x, y, 0]))
-        
-    #     # Apply the translation
-    #     x_real = metric_coordinates[0] + position.x
-    #     y_real = metric_coordinates[1] + position.y
-
-    #     return (x_real, y_real)
+        self.map = None
+        self.map_resolution = None
+        self.map_origin_orientation = None
+        self.map_origin_poistion = None
+        self.start_point = None
+        self.end_point = None
 
     def map_cb(self, msg):
         if msg == None:
@@ -286,23 +81,20 @@ class PathPlan(Node):
         self.get_logger().info('map + occupancy grid init')
     
     def pose_cb(self, pose):
-        #listens to current pose?
-        self.get_logger().info('pose callback 1')
-        self.get_logger().info(f"pose cb is {pose.pose.pose}")
-        # pose.position 
-        # pose.orientation
-        xyth = self.pose_to_xyth(pose.pose)
-        self.start_coord = self.xy_to_pixel(xyth, self.map_input)
-
-        self.get_logger().info(f"start coord is {self.start_coord}")
-        
-        # self.current_pose = pose
-        self.get_logger().info('pose callback 2')
+        if self.map_resolution == None:
+            return
+        self.get_logger().info("pose callback")
+        start_x, start_y = self.map_to_pixel(pose.pose.pose.position.x, pose.pose.pose.position.y)
+        self.start_point = (start_x, start_y)
+        self.plan_path(self.start_point, self.end_point, self.map)
 
     def goal_cb(self, msg):
-        #listens to goal pose and use it to plan current
-        self.get_logger().info('goal callback')
-        self.get_logger().info(f"goal cb msg is {msg.pose}")
+        if self.map_resolution == None:
+            return
+        self.get_logger().info("goal callback")
+        end_x, end_y = self.map_to_pixel(msg.pose.position.x, msg.pose.position.y)
+        self.end_point = (end_x, end_y)
+        self.plan_path(self.start_point, self.end_point, self.map)
 
         xyth = (self.pose_to_xyth(msg))
         self.end_coord = self.xy_to_pixel(xyth, self.map_input)
