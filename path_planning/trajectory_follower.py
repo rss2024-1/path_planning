@@ -4,6 +4,7 @@ from ackermann_msgs.msg import AckermannDriveStamped
 from geometry_msgs.msg import PoseArray
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+import tf_transformations as tf
 
 from .utils import LineTrajectory
 
@@ -17,8 +18,11 @@ class PurePursuit(Node):
         self.declare_parameter('odom_topic', "default")
         self.declare_parameter('drive_topic', "default")
 
-        self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
-        self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
+        # self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
+        # self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
+
+        self.odom_topic = "/odom"
+        self.drive_topic = "/drive"
 
         self.lookahead = 1  # FILL IN #
         self.speed = 1  # FILL IN #
@@ -52,10 +56,11 @@ class PurePursuit(Node):
 
         segment_len = np.linalg.norm(pt1 - pt2)
         if segment_len == 0:
-            return np.linalg.norm(pt1, robot) # any of the points works because segment has no len
-        t = max(0, min(1, np.dot(robot-pt1, pt2-pt1)/segment_len))
+            return np.linalg.norm(pt1 - robot) # any of the points works because segment has no len
+
+        t = max(0, min(1, np.dot(robot.squeeze()-pt1.squeeze(), pt2.squeeze()-pt1.squeeze())/segment_len))
         projection = pt1 + t*(pt2-pt1)
-        return np.linalg.norm(robot, projection)
+        return np.linalg.norm(projection - robot)
 
     def find_min_distance_robot_to_segment(self, pose):
         """
@@ -78,8 +83,10 @@ class PurePursuit(Node):
         Step 2 of function: Iterate through every segment starting at min_distance_index
         and see if we can find a valid goal point for each one of them
         """
+        self.get_logger().info(f"min_distance_index is: {min_distance_index}")
         for i in range(min_distance_index, min_distance_index + 5):
             segment = self.segments[i]
+            
             soln = self.compute_math_for_segment(pose, segment)
             if soln:
                 return soln
@@ -92,7 +99,11 @@ class PurePursuit(Node):
 
         rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
                                     [np.sin(-robot_angle), np.cos(-robot_angle)]])
-        w = rotation_matrix @ v
+        # self.get_logger().info(f"Value of rotation_matrix: {rotation_matrix}")
+        # self.get_logger().info(f"Shape of rotation_matrix: {rotation_matrix.shape}")
+        # self.get_logger().info(f"Value of v: {v}")
+        # self.get_logger().info(f"Shape of v: {v.shape}")
+        w = rotation_matrix @ v.T
         return w>0
 
 
@@ -100,13 +111,11 @@ class PurePursuit(Node):
         """
         Helper function for Step 2
         """
-        pt1_x, pt1_y, pt2_x, pt2_y = segment
+        pt1_x, pt1_y, pt2_x, pt2_y, _, _ = segment
         pt1 = np.array([[pt1_x, pt1_y]])
         pt2 = np.array([[pt2_x, pt2_y]])
 
-        robot_x, robot_y, angle = pose.x, pose.y, pose.orientation
-
-        from scipy import optimize
+        robot_x, robot_y, angle = pose.x, pose.y, pose.angle
 
         # Calculate the slope and y-intercept for the line
         slope = (pt2_y - pt1_y) / (pt2_x - pt1_x)  # add EPSILON to avoid division by zero
@@ -116,7 +125,7 @@ class PurePursuit(Node):
 
         x, y = symbols('x y')
 
-        eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, )
+        eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, self.lookahead**2)
         eq2 = Eq(y - (slope * x + y_intercept), 0)
 
         solutions = solve((eq1,eq2), (x, y))
@@ -124,8 +133,12 @@ class PurePursuit(Node):
         decimal_solutions = np.array([(sol[0].evalf(), sol[1].evalf()) for sol in solutions])
 
         for soln in decimal_solutions:
-            if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
-                return soln
+            if soln[0].is_real and soln[1].is_real:
+                if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
+                    return soln
+        self.get_logger().info(f"Pose: {pose}")
+        self.get_logger().info(f"Segment: {segment}")
+        self.get_logger().info(f"Equations: {eq1}, {eq2}")
         return False
 
     def drive_angle(self, pose, goal_point):
@@ -137,27 +150,33 @@ class PurePursuit(Node):
         return np.arctan(dy/dx)
 
     def pose_callback(self, odom_msg):
-        pose = odom_msg.pose.pose
-        position = pose.position
-        orientation = pose.orientation
+        odom_euler = tf.euler_from_quaternion((odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w))
+        
+        class Pose():
+            def __init__(self, x, y, angle):
+                self.x = x
+                self.y = y
+                self.angle = angle
+        pose = Pose(odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_euler[2])
 
         if len(self.trajectory.points) == 0:
             return
         
         ### STEP 1
-        closest_segment_index = self.find_min_distance_robot_to_segment(position)
+        closest_segment_index = self.find_min_distance_robot_to_segment(pose)
 
         ### STEP 2
         goal_point = self.segment_iteration(pose, closest_segment_index)
         
         ### STEP 3
-        driving_angle = self.drive_angle(pose, goal_point)
+        if goal_point != None:
+            driving_angle = self.drive_angle(pose, goal_point)
 
-        ### STEP 4
-        drive_msg = AckermannDriveStamped()
-        drive_msg.drive.speed = self.speed
-        drive_msg.drive.steering_angle = driving_angle
-        self.drive_pub.publish(drive_msg)
+            ### STEP 4
+            drive_msg = AckermannDriveStamped()
+            drive_msg.drive.speed = self.speed
+            drive_msg.drive.steering_angle = driving_angle
+            self.drive_pub.publish(drive_msg)
 
 
     def trajectory_callback(self, msg):
