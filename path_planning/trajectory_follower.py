@@ -91,7 +91,7 @@ class PurePursuit(Node):
         and see if we can find a valid goal point for each one of them
         """
         self.get_logger().info(f"min_distance_index: {min_distance_index}")
-        for i in range(min_distance_index, min(min_distance_index + 5, len(self.segments))):
+        for i in range(min_distance_index, min(min_distance_index + 20, len(self.segments))):
             segment = self.segments[i]
             soln = self.compute_math_for_segment(pose, segment)
             if soln is not None:
@@ -141,7 +141,10 @@ class PurePursuit(Node):
         for soln in decimal_solutions:
             if soln[0].is_real and soln[1].is_real:
                 if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
-                    return soln
+                    ### Also check if the soln is within the segment
+                    soln_x, soln_y = float(soln[0]), float(soln[1])
+                    if ((pt1_x <= soln_x <= pt2_x) or (pt2_x <= soln_x <= pt1_x)) and ((pt1_y <= soln_y <= pt2_y) or (pt2_y <= soln_y <= pt1_y)):
+                        return soln
         # self.get_logger().info(f"Pose: x={pose.x}, y={pose.y}, theta={pose.angle}")
         # self.get_logger().info(f"Segment: {segment}")
         # self.get_logger().info(f"Equations: {eq1}, {eq2}")
