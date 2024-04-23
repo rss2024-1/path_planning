@@ -52,10 +52,10 @@ class PathPlan(Node):
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
 
-        self.map = np.array([[]])
-        self.map_resolution = 0
-        self.map_origin_orientation = 0
-        self.map_origin_poistion = 0
+        self.map = None
+        self.map_resolution = None
+        self.map_origin_orientation = None
+        self.map_origin_poistion = None
         self.start_point = None
         self.end_point = None
 
@@ -69,12 +69,16 @@ class PathPlan(Node):
         self.plan_path(self.start_point, self.end_point, self.map)
 
     def pose_cb(self, pose):
+        if self.map_resolution == None:
+            return
         self.get_logger().info("pose callback")
         start_x, start_y = self.map_to_pixel(pose.pose.pose.position.x, pose.pose.pose.position.y)
         self.start_point = (start_x, start_y)
         self.plan_path(self.start_point, self.end_point, self.map)
 
     def goal_cb(self, msg):
+        if self.map_resolution == None:
+            return
         self.get_logger().info("goal callback")
         end_x, end_y = self.map_to_pixel(msg.pose.position.x, msg.pose.position.y)
         self.end_point = (end_x, end_y)
