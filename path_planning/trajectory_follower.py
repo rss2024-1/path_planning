@@ -136,7 +136,7 @@ class PurePursuit(Node):
             if soln[0].is_real and soln[1].is_real:
                 if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
                     return soln
-        self.get_logger().info(f"Pose: {pose}")
+        self.get_logger().info(f"Pose: x={pose.x}, y={pose.y}, theta={pose.angle}")
         self.get_logger().info(f"Segment: {segment}")
         self.get_logger().info(f"Equations: {eq1}, {eq2}")
         return False
@@ -157,7 +157,7 @@ class PurePursuit(Node):
                 self.x = x
                 self.y = y
                 self.angle = angle
-        pose = Pose(odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_euler[2])
+        pose = Pose(odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, odom_euler[2])
 
         if len(self.trajectory.points) == 0:
             return
