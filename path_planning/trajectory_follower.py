@@ -42,8 +42,44 @@ class PurePursuit(Node):
                                                  self.odom_topic, 
                                                  self.pose_callback, 
                                                  1)
+        
+        self.start_pub = self.node.create_publisher(Marker, viz_namespace + "/start_point", 1)
 
+        self.circle_pub = self.create_publisher(Marker, viz_namespace, 1)
         self.segments = None
+
+        
+
+    def publish_start_point(self, duration=0.0, scale=0.1):
+        should_publish = len(self.points) > 0
+        self.node.get_logger().info("Before Publishing start point")
+        if self.visualize and self.start_pub.get_subscription_count() > 0:
+            self.node.get_logger().info("Publishing start point")
+            marker = Marker()
+            marker.header = self.make_header("/map")
+            marker.ns = self.viz_namespace + "/trajectory"
+            marker.id = 0
+            marker.type = 2  # sphere
+            marker.lifetime = rclpy.duration.Duration(seconds=duration).to_msg()
+            if should_publish:
+                marker.action = 0
+                marker.pose.position.x = self.points[0][0]
+                marker.pose.position.y = self.points[0][1]
+                marker.pose.orientation.w = 1.0
+                marker.scale.x = 1.0
+                marker.scale.y = 1.0
+                marker.scale.z = 1.0
+                marker.color.r = 0.0
+                marker.color.g = 1.0
+                marker.color.b = 0.0
+                marker.color.a = 1.0
+            else:
+                # delete marker
+                marker.action = 2
+
+            self.start_pub.publish(marker)
+        elif self.start_pub.get_subscription_count() == 0:
+            self.node.get_logger().info("Not publishing start point, no subscribers")
         
     def find_min_distance_for_segment(self, row):
         """
@@ -126,6 +162,34 @@ class PurePursuit(Node):
         x, y = symbols('x y')
 
         eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, self.lookahead**2)
+
+        ##### visualize the circle #####
+        line_strip = Marker()
+        line_strip.type = Marker.LINE_STRIP
+        line_strip.header.frame_id = frame
+
+        # Set the size and color
+        line_strip.scale.x = 0.1
+        line_strip.scale.y = 0.1
+        line_strip.color.a = 1.
+        line_strip.color.r = 0.0
+        line_strip.color.g = 1.0
+        line_strip.color.b = 1.0
+
+        # Fill the line with the desired values
+        x_vals = np.arange(100)
+        y_vals = np.sqrt(self.lookahead**2 - (x_vals-robot_x)**2)
+        for xi, yi in zip(x_vals, y_vals):
+            p = Point()
+            p.x = xi
+            p.y = yi
+            line_strip.points.append(p)
+
+        # Publish the line
+        circle_publisher.publish(line_strip)
+        #### stop visualizing the circle ####
+
+
         eq2 = Eq(y - (slope * x + y_intercept), 0)
 
         solutions = solve((eq1,eq2), (x, y))
