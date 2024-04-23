@@ -27,7 +27,7 @@ class PurePursuit(Node):
         self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
 
-        self.lookahead = 0.25  # FILL IN #
+        self.lookahead = 1  # FILL IN #
         self.speed = 1.0  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
@@ -123,15 +123,14 @@ class PurePursuit(Node):
         Step 2 of function: Iterate through every segment starting at min_distance_index
         and see if we can find a valid goal point for each one of them
         """
-        self.get_logger().info(f"min_distance_index is: {min_distance_index}")
-        for i in range(min_distance_index, min_distance_index + 5):
+        self.get_logger().info(f"min_distance_index: {min_distance_index}")
+        for i in range(min_distance_index, min(min_distance_index + 5, len(self.segments))):
             segment = self.segments[i]
-            
             soln = self.compute_math_for_segment(pose, segment)
             if soln is not None:
-                self.get_logger().info(f"solution found for segment {segment}")
+                self.get_logger().info(f"soln found segment # {i}")
                 return soln
-        self.get_logger().info(f"No solution found for segment {segment}")
+        # self.get_logger().info(f"No solution found for segment {segment}")
 
     
     def check_angle(self, robot_angle, check_point, robot_point):
@@ -198,7 +197,6 @@ class PurePursuit(Node):
         eq2 = Eq(y - (slope * x + y_intercept), 0)
 
         solutions = solve((eq1,eq2), (x, y))
-        print(solutions)
         decimal_solutions = np.array([(sol[0].evalf(), sol[1].evalf()) for sol in solutions])
 
         for soln in decimal_solutions:
@@ -210,16 +208,33 @@ class PurePursuit(Node):
         # self.get_logger().info(f"Equations: {eq1}, {eq2}")
         return None
 
+    # def drive_angle(self, pose, goal_point):
+    #     """
+    #     Step 3: given a goal point and a pose, drive to it
+    #     """
+    #     dx = goal_point[0] - pose.x
+    #     dy = goal_point[1] - pose.y
+    #     # self.get_logger().info(f"Value of dx: {dx}")
+    #     # self.get_logger().info(f"Value of dy: {dy}")
+    #     # self.get_logger().info(f"{type(dx)}")
+    #     return np.arctan(float(dy)/float(dx))
+
     def drive_angle(self, pose, goal_point):
-        """
-        Step 3: given a goal point and a pose, drive to it
-        """
-        dx = goal_point[0] - pose.x
-        dy = goal_point[1] - pose.y
-        # self.get_logger().info(f"Value of dx: {dx}")
-        # self.get_logger().info(f"Value of dy: {dy}")
-        # self.get_logger().info(f"{type(dx)}")
-        # return np.arctan(float(dy)/float(dx))
+        dx = float(goal_point[0] - pose.x)
+        dy = float(goal_point[1] - pose.y)
+        robot_angle = pose.angle
+        rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
+                                    [np.sin(-robot_angle), np.cos(-robot_angle)]])
+        # self.get_logger().info(f"Value of rotation_matrix: {rotation_matrix}")
+        # self.get_logger().info(f"Shape of rotation_matrix: {rotation_matrix.shape}")
+        # self.get_logger().info(f"Value of v: {v}")
+        # self.get_logger().info(f"Shape of v: {v.shape}")
+        w = rotation_matrix @ np.array([[dx], [dy]])
+
+        th = np.arctan(w[0][0]/w[1][0])
+        return th
+        # lookahead_dist = np.sqrt(dx**2 + dy**2)
+        # return np.arctan(2*self.wheelbase_length*np.sin(th)/lookahead_dist)
     
     def publish_marker(self, point, duration=0.0, scale=0.1):
         should_publish = True
@@ -287,6 +302,7 @@ class PurePursuit(Node):
             drive_msg = AckermannDriveStamped()
             drive_msg.drive.speed = self.speed
             drive_msg.drive.steering_angle = driving_angle
+            self.get_logger().info(f"Driving angle is: {driving_angle}")
             self.drive_pub.publish(drive_msg)
 
 
