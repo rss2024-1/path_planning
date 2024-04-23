@@ -62,6 +62,31 @@ class PathPlan(Node):
     def map_cb(self, msg):
         self.get_logger().info("map callback")
         self.map = np.array(msg.data).reshape(msg.info.height, msg.info.width)
+        
+        self.get_logger().info(f"np.array(msg.data): {np.array(msg.data)}")
+        self.get_logger().info(f"Dimensions of np.array(msg.data): {np.array(msg.data).shape}")
+        self.get_logger().info(f"self.map: {self.map}")
+        self.get_logger().info(f"Dimensions of self.map: {self.map.shape if self.map is not None else None}")
+        self.get_logger().info(f"Summary statistics of self.map: {np.unique(self.map, return_counts=True) if self.map is not None else None}")
+        
+        from scipy.ndimage import binary_dilation
+
+        # Create a binary mask where 100 (walls) are True
+        wall_mask = self.map == 100
+
+        # Dilate the mask by 5 pixels
+        dilated_wall_mask = binary_dilation(wall_mask, iterations=15)
+
+        # Apply the dilated mask back to the map, setting these pixels to 100
+        self.map[dilated_wall_mask] = 100
+
+        # Post dilation
+        self.get_logger().info(f"np.array(msg.data): {np.array(msg.data)}")
+        self.get_logger().info(f"Dimensions of np.array(msg.data): {np.array(msg.data).shape}")
+        self.get_logger().info(f"self.map: {self.map}")
+        self.get_logger().info(f"Dimensions of self.map: {self.map.shape if self.map is not None else None}")
+        self.get_logger().info(f"Summary statistics of self.map: {np.unique(self.map, return_counts=True) if self.map is not None else None}")
+
         self.map_resolution = msg.info.resolution
         self.map_origin_orientation = msg.info.origin.orientation
         self.map_origin_poistion = msg.info.origin.position

@@ -27,7 +27,7 @@ class PurePursuit(Node):
         self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
 
-        self.lookahead = 1  # FILL IN #
+        self.lookahead = 1.0  # FILL IN #
         self.speed = 1.0  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
@@ -90,8 +90,8 @@ class PurePursuit(Node):
         Step 2 of function: Iterate through every segment starting at min_distance_index
         and see if we can find a valid goal point for each one of them
         """
-        self.get_logger().info(f"min_distance_index: {min_distance_index}")
-        for i in range(min_distance_index, min(min_distance_index + 20, len(self.segments))):
+        # self.get_logger().info(f"min_distance_index: {min_distance_index}")
+        for i in range(min_distance_index, len(self.segments)):
             segment = self.segments[i]
             soln = self.compute_math_for_segment(pose, segment)
             if soln is not None:
@@ -227,6 +227,19 @@ class PurePursuit(Node):
 
         if len(self.trajectory.points) == 0:
             return
+        
+        ### PRE-STEP 1: Preprocess trajectory.points:
+        reference_point = self.trajectory.points[0]
+        filtered_points = [reference_point]
+
+        for point in self.trajectory.points[1:]:
+            if np.linalg.norm(np.array(point) - np.array(reference_point)) >= 1:
+                filtered_points.append(point)
+                reference_point = point
+
+        self.trajectory.points = filtered_points
+        trajectory_length = len(self.trajectory.points)
+        self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
         
         ### STEP 1
         closest_segment_index = self.find_min_distance_robot_to_segment(pose)
