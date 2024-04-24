@@ -20,7 +20,7 @@ particle_filter:
     # The names of topics to listen and publish to
     map_topic: "/map"
     scan_topic: "/scan"
-    odom_topic: "/vesc/odom"
+    odom_topic: "/pf/pose/odom"
 
     # The frame you should publish your transform to
     particle_filter_frame: "/base_link"
@@ -31,11 +31,11 @@ particle_filter:
     lidar_scale_to_map_scale: 1.0
 trajectory_planner:
   ros__parameters:
-    odom_topic: "/vesc/odom"
+    odom_topic: "/pf/pose/odom"
     map_topic: "/map"
     scan_topic: "/scan"
     initial_pose_topic: "/initialpose"
 trajectory_follower:
   ros__parameters:
     odom_topic: "/vesc/odom"
-    drive_topic: "/vesc/low_level/input/navigation"
+    drive_topic: "/vesc/high_level/input/nav0"

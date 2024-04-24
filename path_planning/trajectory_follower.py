@@ -20,11 +20,11 @@ class PurePursuit(Node):
         self.declare_parameter('odom_topic', "default")
         self.declare_parameter('drive_topic', "default")
 
-        # self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
-        # self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
+        self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
+        self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
 
-        self.odom_topic = "/odom"
-        self.drive_topic = "/drive"
+        # self.odom_topic = "/odom"
+        # self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
 
         self.lookahead = 1.0  # FILL IN #
@@ -114,6 +114,42 @@ class PurePursuit(Node):
         return w[0][0]>0
 
 
+    # def compute_math_for_segment(self, pose, segment):
+    #     """
+    #     Helper function for Step 2
+    #     """
+    #     pt1_x, pt1_y, pt2_x, pt2_y, _, _ = segment
+    #     pt1 = np.array([[pt1_x, pt1_y]])
+    #     pt2 = np.array([[pt2_x, pt2_y]])
+
+    #     robot_x, robot_y, angle = pose.x, pose.y, pose.angle
+
+    #     # Calculate the slope and y-intercept for the line
+    #     slope = (pt2_y - pt1_y) / (pt2_x - pt1_x)  # add EPSILON to avoid division by zero
+    #     y_intercept = pt1_y - slope * pt1_x
+
+    #     from sympy import symbols, Eq, solve
+
+    #     x, y = symbols('x y')
+
+    #     eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, self.lookahead**2)
+    #     eq2 = Eq(y - (slope * x + y_intercept), 0)
+
+    #     solutions = solve((eq1,eq2), (x, y))
+    #     decimal_solutions = np.array([(sol[0].evalf(), sol[1].evalf()) for sol in solutions])
+
+    #     for soln in decimal_solutions:
+    #         if soln[0].is_real and soln[1].is_real:
+    #             if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
+    #                 ### Also check if the soln is within the segment
+    #                 soln_x, soln_y = float(soln[0]), float(soln[1])
+    #                 if ((pt1_x <= soln_x <= pt2_x) or (pt2_x <= soln_x <= pt1_x)) and ((pt1_y <= soln_y <= pt2_y) or (pt2_y <= soln_y <= pt1_y)):
+    #                     return soln
+    #     # self.get_logger().info(f"Pose: x={pose.x}, y={pose.y}, theta={pose.angle}")
+    #     # self.get_logger().info(f"Segment: {segment}")
+    #     # self.get_logger().info(f"Equations: {eq1}, {eq2}")
+    #     return None
+
     def compute_math_for_segment(self, pose, segment):
         """
         Helper function for Step 2
@@ -125,30 +161,27 @@ class PurePursuit(Node):
         robot_x, robot_y, angle = pose.x, pose.y, pose.angle
 
         # Calculate the slope and y-intercept for the line
-        slope = (pt2_y - pt1_y) / (pt2_x - pt1_x)  # add EPSILON to avoid division by zero
+        slope = (pt2_y - pt1_y) / (pt2_x - pt1_x) if pt2_x != pt1_x else np.inf
         y_intercept = pt1_y - slope * pt1_x
 
-        from sympy import symbols, Eq, solve
+        x = np.linspace(min(pt1_x, pt2_x), max(pt1_x, pt2_x), 100)
+        y = slope * x + y_intercept
 
-        x, y = symbols('x y')
+        # Calculate the distance between robot pose and each point on the line
+        distances = np.sqrt((x - robot_x)**2 + (y - robot_y)**2)
 
-        eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, self.lookahead**2)
-        eq2 = Eq(y - (slope * x + y_intercept), 0)
+        # Find points on the line that are within lookahead distance
+        valid_indices = np.where(distances <= self.lookahead)[0]
 
-        solutions = solve((eq1,eq2), (x, y))
-        decimal_solutions = np.array([(sol[0].evalf(), sol[1].evalf()) for sol in solutions])
+        for idx in valid_indices:
+            soln_x, soln_y = x[idx], y[idx]
+            if ((pt1_x <= soln_x <= pt2_x) or (pt2_x <= soln_x <= pt1_x)) and \
+            ((pt1_y <= soln_y <= pt2_y) or (pt2_y <= soln_y <= pt1_y)):
+                if self.check_angle(angle, np.array([[soln_x, soln_y]]), np.array([[robot_x, robot_y]])):
+                    return soln_x, soln_y
 
-        for soln in decimal_solutions:
-            if soln[0].is_real and soln[1].is_real:
-                if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
-                    ### Also check if the soln is within the segment
-                    soln_x, soln_y = float(soln[0]), float(soln[1])
-                    if ((pt1_x <= soln_x <= pt2_x) or (pt2_x <= soln_x <= pt1_x)) and ((pt1_y <= soln_y <= pt2_y) or (pt2_y <= soln_y <= pt1_y)):
-                        return soln
-        # self.get_logger().info(f"Pose: x={pose.x}, y={pose.y}, theta={pose.angle}")
-        # self.get_logger().info(f"Segment: {segment}")
-        # self.get_logger().info(f"Equations: {eq1}, {eq2}")
         return None
+
 
     # def drive_angle(self, pose, goal_point):
     #     """
