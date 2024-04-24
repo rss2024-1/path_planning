@@ -66,7 +66,7 @@ class PathPlan(Node):
         # self.RRT_tree = dict({self.current_pose: None})
 
     
-    # def pose_to_xyth(self, pose): 
+    '''# def pose_to_xyth(self, pose): 
     #     #
     #     # Extract position
     #     # try: 
@@ -97,7 +97,7 @@ class PathPlan(Node):
     #     y_real = metric_coordinates[1] - position.y
     #     #(-10, -1)
 
-    #     return (x_real, y_real)
+    #     return (x_real, y_real)'''
     
     def pose_to_xyth(self, pose): 
         position = pose.pose.position
@@ -106,7 +106,7 @@ class PathPlan(Node):
         y = position.y
         return (x, y)
     
-    # def pose_to_xyth(self, pose): 
+    '''# def pose_to_xyth(self, pose): 
     #     position = pose.pose.position
     #     orientation = pose.pose.orientation
     
@@ -130,7 +130,7 @@ class PathPlan(Node):
     #     x_real = metric_coordinates[0] + position.x
     #     y_real = metric_coordinates[1] + position.y
 
-    #     return (x_real, y_real)
+    #     return (x_real, y_real)'''
 
     def pixel_to_xy(self, coord, msg): 
         u, v = coord[0], coord[1]
@@ -154,7 +154,7 @@ class PathPlan(Node):
         return (x, y)
     
 
-    # def pixel_to_xy(self, coord, msg):
+    '''# def pixel_to_xy(self, coord, msg):
     #     """ Convert pixel coordinates (u, v) to real-world coordinates (x, y). """
     #     u, v = coord
     #     # Extract information from msg
@@ -192,7 +192,7 @@ class PathPlan(Node):
     #     #               [0, 1, ty], 
     #     #               [0, 0, 1]])
     #     # np.linalg.inv()
-    #     return (u, v)
+    #     return (u, v)'''
     
     def xy_to_pixel(self, coord, msg): 
         x, y = coord[0], coord[1]
@@ -215,7 +215,7 @@ class PathPlan(Node):
         pixel_y = int(rotated_y/resolution)
 
         return pixel_x, pixel_y
-    # def xy_to_pixel(self, coord, msg): 
+    '''# def xy_to_pixel(self, coord, msg): 
     #     x, y = coord[0], coord[1]
     #     # translation = msg.info.origin.position
     #     orientation = msg.info.origin.orientation
@@ -270,7 +270,7 @@ class PathPlan(Node):
     #     x_real = metric_coordinates[0] + position.x
     #     y_real = metric_coordinates[1] + position.y
 
-    #     return (x_real, y_real)
+    #     return (x_real, y_real)'''
 
     def map_cb(self, msg):
         self.map_input = msg
@@ -314,10 +314,10 @@ class PathPlan(Node):
         # self.get_logger().info(f"start, end coord is {self.start_coord, self.end_coord}")
         
 
-    # def sample(self): 
+    '''# def sample(self): 
     #     #generate a random sample in robot config space 
     #     # self.start[:2]
-    #     return (random.uniform(0, len(self.occupancy_grid)), random.uniform(0, len(self.occupancy_grid)))
+    #     return (random.uniform(0, len(self.occupancy_grid)), random.uniform(0, len(self.occupancy_grid)))'''
     
     def sample(self):
         """Generate a random sample in the robot configuration space."""
@@ -327,12 +327,12 @@ class PathPlan(Node):
         #                    random.uniform(-20, 15))
 
     
-    # def distance(self, coord1, coord2): 
+    '''# def distance(self, coord1, coord2): 
     #     #return distance between two robot configs 
     #     return np.sqrt((coord1[0] - coord2[0])**2 + (coord1[1] - coord2[1])**2)
     
     # def euclidean_distance(a, b):
-    #     return np.sqrt((a.x - b.x)**2 + (a.y - b.y)**2)
+    #     return np.sqrt((a.x - b.x)**2 + (a.y - b.y)**2)'''
 
 
     def collide(self, robot_config): 
@@ -352,7 +352,7 @@ class PathPlan(Node):
         return False
         # return any(obs.collide(robot_config) for obs in self.obstacles)
 
-    # def line_path_collides(self, start, end): 
+    '''# def line_path_collides(self, start, end): 
     #     """
     #     checks if input robot config collides with some obstacle  
     #     """
@@ -367,7 +367,7 @@ class PathPlan(Node):
     #         #     self.get_logger().info('error from here---------')
     #         #     return True
             
-    #     return False
+    #     return False'''
 
     
     def plan_path(self, start_point, end_point, map):
@@ -456,7 +456,7 @@ class PathPlan(Node):
         path: a list of RobotConfig as the trajectory. Return None if we can't find such a path after the specified number of iterations.
         rrt: an RRT object. The root should be the intial_config. There must also exist another node for goal_config.
         """
-        # # finalpath = [start]
+        '''# # finalpath = [start]
         # print('start rrt-------')
         # rrt_problem = RRT(RRTNode(start))
         # for k in range(nr_iterations):
@@ -482,7 +482,8 @@ class PathPlan(Node):
         # return None, rrt_problem
         
         # return [(point.x, point.y) for point in path], None
-        # finalpath = [start]
+        # finalpath = [start]'''
+        
         print('start rrt-------')
         rrt_problem = RRT(RRTNode(start))
         
@@ -622,10 +623,10 @@ class RRT:
         #return distance between two robot configs 
         return np.sqrt((coord1[0] - coord2[0])**2 + (coord1[1] - coord2[1])**2)
     
-    # def sample(self) -> RobotConfig:
+    '''# def sample(self) -> RobotConfig:
     #     """Generate a random sample in the robot configuration space."""
     #     return RobotConfig(random.uniform(self.extent[0][0], self.extent[1][0]),
-    #                        random.uniform(self.extent[0][1], self.extent[1][1]))
+    #                        random.uniform(self.extent[0][1], self.extent[1][1]))'''
 
 
     def extend(self, parent: RRTNode, child_config: RobotConfig) -> RRTNode:
