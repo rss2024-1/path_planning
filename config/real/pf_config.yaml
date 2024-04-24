@@ -29,3 +29,13 @@ particle_filter:
     deterministic: false
 
     lidar_scale_to_map_scale: 1.0
+trajectory_planner:
+  ros__parameters:
+    odom_topic: "/vesc/odom"
+    map_topic: "/map"
+    scan_topic: "/scan"
+    initial_pose_topic: "/initialpose"
+trajectory_follower:
+  ros__parameters:
+    odom_topic: "/vesc/odom"
+    drive_topic: "/vesc/low_level/input/navigation"
