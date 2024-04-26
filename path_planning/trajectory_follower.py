@@ -27,7 +27,7 @@ class PurePursuit(Node):
         # self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
 
-        self.lookahead = 1.0  # FILL IN #
+        self.lookahead = 0.1  # FILL IN #
         self.speed = 1.0  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
@@ -64,7 +64,7 @@ class PurePursuit(Node):
         segment_len = np.linalg.norm(pt1 - pt2)
         if segment_len == 0:
             return np.linalg.norm(pt1 - robot) # any of the points works because segment has no len
-
+        # math for computing the distance between the segment to the robot
         t = max(0, min(1, np.dot(robot.squeeze()-pt1.squeeze(), pt2.squeeze()-pt1.squeeze())/segment_len))
         projection = pt1 + t*(pt2-pt1)
         return np.linalg.norm(projection - robot)
@@ -98,7 +98,6 @@ class PurePursuit(Node):
                 self.get_logger().info(f"soln found segment # {i}")
                 return soln
         # self.get_logger().info(f"No solution found for segment {segment}")
-
     
     def check_angle(self, robot_angle, check_point, robot_point):
         """Helper function for step 2"""
@@ -210,6 +209,39 @@ class PurePursuit(Node):
         return th
         # lookahead_dist = np.sqrt(dx**2 + dy**2)
         # return np.arctan(2*self.wheelbase_length*np.sin(th)/lookahead_dist)
+
+    def calculate_curvature(self, points):
+        # Fit a circle to the points and calculate the radius of curvature
+        # You can use a least squares fitting approach or another method
+        # For simplicity, let's assume we have 3 points and calculate the curvature
+        # self.get_logger().info(f"###################### this is points: {points} ##################")
+        p1 = points[0:2]
+        # self.get_logger().info(f"############ this is p1: {p1} ###############")
+        p2 = points[2:4]
+        p3 = points[4:6]
+        x1, y1 = p1
+        x2, y2 = p2
+        x3, y3 = p3
+
+        # Calculate the center of the circle
+        # This is the intersection of perpendicular bisectors of the chords
+        # formed by the three points
+        A = np.array([[2*(x2-x1), 2*(y2-y1)], [2*(x3-x2), 2*(y3-y2)]])
+        b = np.array([x2**2 - x1**2 + y2**2 - y1**2, x3**2 - x2**2 + y3**2 - y2**2])
+        center = np.linalg.solve(A, b)
+
+        # Calculate the radius of curvature
+        radius = np.sqrt((x1 - center[0])**2 + (y1 - center[1])**2)
+
+        # Calculate curvature (1/radius)
+        curvature = 1.0 / radius
+
+        return curvature
+
+    # def adjust_lookahead(self, lookahead, curvature):
+    #     lookahead_factor = 1.0/(1.0+curvature)
+    #     adjusted_lookahead = lookahead * lookahead_factor
+    #     return adjusted_lookahead
     
     def publish_marker(self, point, duration=0.0, scale=0.1):
         should_publish = True
@@ -247,7 +279,6 @@ class PurePursuit(Node):
         header.frame_id = frame_id
         return header
 
-
     def pose_callback(self, odom_msg):
         odom_euler = tf.euler_from_quaternion((odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w))
         
@@ -275,7 +306,15 @@ class PurePursuit(Node):
         self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
         
         ### STEP 1
-        closest_segment_index = self.find_min_distance_robot_to_segment(pose)
+        closest_segment_index = self.find_min_distance_robot_to_segment(pose) # gets min distance but also populates self.segments
+
+        ### here is where i think we should dynamically change the lookahead distance
+        # check the straightness of the path around current goal point *get 3 pts
+        curvature = self.calculate_curvature([pt for pt in self.segments[closest_segment_index:closest_segment_index+3][1]])
+        if curvature < 0.1: # idk what number this should actually be; if this is the curviest 
+            self.lookahead*=7 # if straight, big lookahead
+        else:
+            self.lookahead*=0.5
 
         ### STEP 2
         goal_point = self.segment_iteration(pose, closest_segment_index)
