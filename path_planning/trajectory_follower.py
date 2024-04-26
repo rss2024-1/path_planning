@@ -22,7 +22,7 @@ class PurePursuit(Node):
 
         # self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         # self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
-
+        print("hello")
         self.odom_topic = "/odom"
         self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
