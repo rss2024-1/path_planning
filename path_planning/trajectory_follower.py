@@ -194,13 +194,14 @@ class PurePursuit(Node):
     #     return np.arctan(float(dy)/float(dx))
 
     def drive_angle(self, pose, goal_point):
-        pose_point = np.array([pose.x, pose.y])
-        dx = float(goal_point[0], pose_point[0])
+        dx = float(goal_point[0] - pose.x)
+        pose_point = np.array([float(pose.x), float(pose.y)])
+        goal_point = np.array(goal_point)
         l_d = np.linalg.norm(goal_point-pose_point)
         R = (l_d**2)/(2*dx)
         alpha = np.arcsin(l_d/(2*R))
         K = 2*np.sin(alpha)/l_d
-        steering_angle = np.arctan2(K*self.wheelbase_length)
+        steering_angle = np.arctan(K*self.wheelbase_length)
         return steering_angle
 
         # dx = float(goal_point[0] - pose.x)
@@ -320,10 +321,10 @@ class PurePursuit(Node):
         ### here is where i think we should dynamically change the lookahead distance
         # check the straightness of the path around current goal point *get 3 pts
         curvature = self.calculate_curvature([pt for pt in self.segments[closest_segment_index:closest_segment_index+3][1]])
-        if curvature < 0.1: # idk what number this should actually be; if this is the curviest 
-            self.lookahead*=2 # if straight, big lookahead
+        if curvature < 0.2: # idk what number this should actually be; if this is the curviest 
+            self.lookahead*=1.3 # if straight, big lookahead
         else:
-            self.lookahead*=0.5
+            self.lookahead*=0.7
 
         ### STEP 2
         goal_point = self.segment_iteration(pose, closest_segment_index)
