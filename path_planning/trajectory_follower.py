@@ -27,7 +27,7 @@ class PurePursuit(Node):
         # self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
 
-        self.lookahead = 0.1  # FILL IN #
+        self.lookahead = 1.0  # FILL IN #
         self.speed = 1.0  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
@@ -194,19 +194,28 @@ class PurePursuit(Node):
     #     return np.arctan(float(dy)/float(dx))
 
     def drive_angle(self, pose, goal_point):
-        dx = float(goal_point[0] - pose.x)
-        dy = float(goal_point[1] - pose.y)
-        robot_angle = pose.angle
-        rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
-                                    [np.sin(-robot_angle), np.cos(-robot_angle)]])
-        # self.get_logger().info(f"Value of rotation_matrix: {rotation_matrix}")
-        # self.get_logger().info(f"Shape of rotation_matrix: {rotation_matrix.shape}")
-        # self.get_logger().info(f"Value of v: {v}")
-        # self.get_logger().info(f"Shape of v: {v.shape}")
-        w = rotation_matrix @ np.array([[dx], [dy]])
+        pose_point = np.array([pose.x, pose.y])
+        dx = float(goal_point[0], pose_point[0])
+        l_d = np.linalg.norm(goal_point-pose_point)
+        R = (l_d**2)/(2*dx)
+        alpha = np.arcsin(l_d/(2*R))
+        K = 2*np.sin(alpha)/l_d
+        steering_angle = np.arctan2(K*self.wheelbase_length)
+        return steering_angle
 
-        th = np.arctan(w[0][0]/w[1][0])
-        return th
+        # dx = float(goal_point[0] - pose.x)
+        # dy = float(goal_point[1] - pose.y)
+        # robot_angle = pose.angle
+        # rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
+        #                             [np.sin(-robot_angle), np.cos(-robot_angle)]])
+        # # self.get_logger().info(f"Value of rotation_matrix: {rotation_matrix}")
+        # # self.get_logger().info(f"Shape of rotation_matrix: {rotation_matrix.shape}")
+        # # self.get_logger().info(f"Value of v: {v}")
+        # # self.get_logger().info(f"Shape of v: {v.shape}")
+        # w = rotation_matrix @ np.array([[dx], [dy]])
+
+        # th = np.arctan(w[0][0]/w[1][0])
+        # return th
         # lookahead_dist = np.sqrt(dx**2 + dy**2)
         # return np.arctan(2*self.wheelbase_length*np.sin(th)/lookahead_dist)
 
@@ -235,7 +244,7 @@ class PurePursuit(Node):
 
         # Calculate curvature (1/radius)
         curvature = 1.0 / radius
-
+        self.get_logger().info(f"################# curvature is: {curvature} #################")
         return curvature
 
     # def adjust_lookahead(self, lookahead, curvature):
@@ -303,7 +312,7 @@ class PurePursuit(Node):
 
         self.trajectory.points = filtered_points
         trajectory_length = len(self.trajectory.points)
-        self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
+        # self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
         
         ### STEP 1
         closest_segment_index = self.find_min_distance_robot_to_segment(pose) # gets min distance but also populates self.segments
@@ -312,7 +321,7 @@ class PurePursuit(Node):
         # check the straightness of the path around current goal point *get 3 pts
         curvature = self.calculate_curvature([pt for pt in self.segments[closest_segment_index:closest_segment_index+3][1]])
         if curvature < 0.1: # idk what number this should actually be; if this is the curviest 
-            self.lookahead*=7 # if straight, big lookahead
+            self.lookahead*=2 # if straight, big lookahead
         else:
             self.lookahead*=0.5
 
