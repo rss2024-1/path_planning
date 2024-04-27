@@ -23,10 +23,12 @@ class PathPlan(Node):
         self.declare_parameter('initial_pose_topic', "default")
         self.declare_parameter('rrt_points', 10e3)
         self.declare_parameter('rrt_step', 60.0) # value in pixels - note that 1 pixel on stata basement map is approx. 0.05 meters irl
-        self.declare_parameter('rrt_bias', 0.1)
-        self.declare_parameter('car_size', 2.0)
-        self.declare_parameter('goal_dist', 1.0)
-        self.declare_parameter('goal_angle', 0.3)
+        self.declare_parameter('rrt_bias', 0.1) # rrt goal bias - fraction of time to specifically sample the goal point
+        self.declare_parameter('car_size', 2.0) # radius (in pixels) to give as clearance for the robot
+        self.declare_parameter('run_rrt*', True) # bool to run rrt* optimization after rrt finds a solution
+        self.declare_parameter('rrt*_n_exp', 30) # number of nearest nodes to check in rrt* restructuring
+        self.declare_parameter('rrt*_d_exp', 3.0) # radius (as multiple of rrt_step) to check for nearby nodes in rrt* restructuring
+
 
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         self.map_topic = self.get_parameter('map_topic').get_parameter_value().string_value
@@ -35,8 +37,9 @@ class PathPlan(Node):
         self.rrt_step_size = self.get_parameter('rrt_step').value
         self.rrt_goal_bias = self.get_parameter('rrt_bias').value
         self.robot_clearance = self.get_parameter('car_size').value
-        self.goal_distance_th = self.get_parameter('goal_dist').value
-        self.goal_angle_th = self.get_parameter('goal_dist').value
+        self.run_star = self.get_parameter('run_rrt*').value
+        self.num_node_expand = self.get_parameter('rrt*_n_exp').value
+        self.dist_node_expand = self.get_parameter('rrt*_d_exp').value
 
         self.map_sub = self.create_subscription(
             OccupancyGrid,
@@ -50,36 +53,7 @@ class PathPlan(Node):
             self.goal_cb,
             10
         )
-        
-        self.point_pub = self.create_publisher(
-            PointStamped,
-            "/rrt/nodes",
-            10
-        )
-
-        self.proposed_pub = self.create_publisher(
-            PointStamped,
-            "/rrt/proposed",
-            10
-        )
-        
-        self.nearest_pub = self.create_publisher(
-            PointStamped,
-            "/rrt/nearest",
-            10
-        )
-
-        self.sample_pub = self.create_publisher(
-            PointStamped,
-            "/rrt/sample",
-            10
-        )
-
-        self.point_test = self.create_publisher(
-            PointStamped,
-            "/rrt/tests",
-            10
-        )
+    
 
         self.traj_pub = self.create_publisher(
             PoseArray,
@@ -96,19 +70,40 @@ class PathPlan(Node):
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
         
-        # vars to store data from subs TODO set reasonable empty/default values
-        self.map_input = None
-        self.map_width = -1
-        self.map_height = -1
-        self.occupancy_grid = None
-        self.obstacles = None
-        self.div_obst = None
-        self.goal_pose = None
-        self.start_pose = None
+        # > Debug/extra publishers below <
+        self.point_pub = self.create_publisher(
+            PointStamped,
+            "/rrt/nodes",
+            10
+        )
+        self.proposed_pub = self.create_publisher(
+            PointStamped,
+            "/rrt/proposed",
+            10
+        )
+        self.nearest_pub = self.create_publisher(
+            PointStamped,
+            "/rrt/nearest",
+            10
+        )
+        self.sample_pub = self.create_publisher(
+            PointStamped,
+            "/rrt/sample",
+            10
+        )
+        self.point_test = self.create_publisher(
+            PointStamped,
+            "/rrt/tests",
+            10
+        )
+        # ^ Debug/extra publishers above ^
         
-        self.rrt_tree = None
-        self.rrt_path = None
-        self.rrt_cost = np.inf
+        # vars to store node data
+        self.map_input, self.map_width, self.map_height = None, None, None
+        self.occupancy_grid, self.goal_pose, self.start_pose = None, None, None
+        
+        self.rrt_tree, self.rrt_path, self.rrt_cost = None, None, np.inf
+        self.rrt_star_tree, self.rrt_star_path, self.rrt_star_cost = None, None, np.inf
     
     def pixel_to_xyth(self, coord, msg): 
         u, v, pix_th = coord[0], coord[1], coord[2]
@@ -158,11 +153,11 @@ class PathPlan(Node):
 
     # def angle_to(p2,p1): # not using b/c f'n calls are slow
     #     '''returns the (pixel grid) angle to point 2 from point 1, with correct quadrant'''
-    #     return float(np.arctan2(p2[0]-p1[0], p2[1]-p1[1]))
+    #     return float(np.arctan2(p2[1]-p1[1], p2[0]-p1[0]))
     
     # def dist_to(p2,p1): # not using b/c f'n calls are slow
     #     '''returns the distance to point 2 from point 1'''
-    #     return float(np.sqrt((p2[0]-p1[0])^2 + (p2[1]-p1[1])^2))
+    #     return float(np.sqrt((p2[0]-p1[0])**2 + (p2[1]-p1[1])**2))
     
     def nearest_pt(self, points, target):
         '''returns the nearest existing point in the tree to a proposed new point'''
@@ -173,99 +168,83 @@ class PathPlan(Node):
                 nearest, index_of, best_dist = point, i, this_dist
         return nearest, index_of, best_dist
     
-    def n_nearest(self, points, target, n: int):
-        point_list, nearby_pts = [], []
-        for point in points:
-            if point != target: point_list.append(point)
-        while 0 < len(nearby_pts) < n:
-            next = self.nearest_pt(point_list, target)
-            point_list.remove(next)
-            nearby_pts.append(next)
-        return nearby_pts
+    def within_d(self, points, target):
+        point_idxs, point_list, nearby_idxs = [], [], [] 
+        last_dist, max_d = 0, self.rrt_step_size*self.dist_node_expand
+        for i, point in enumerate(points):
+            if point[0] != target[0]:
+                point_idxs.append(i)
+                point_list.append(point)
+        while last_dist <= max_d:
+            near_pt, idx, dist = self.nearest_pt(point_list, target[0])
+            last_dist = dist
+            if dist <= max_d:
+                index = point_idxs[idx]
+                nearby_idxs.append(index)
+                point_idxs.remove(index)
+                point_list.remove(near_pt)
+        for i in nearby_idxs:
+            dist = np.sqrt((target[0][0]-points[i][0][0])**2+(target[0][1]-points[i][0][1])**2)
+            if self.collision(target[0], points[i][0], dist):
+                nearby_idxs.remove(i)
+        return nearby_idxs
+            
+        
+    # def n_nearest(self, points, target):
+    #     point_list, nearby_pts, n = [], [], self.num_node_expand
+    #     for point in points:
+    #         if point != target: point_list.append(point)
+    #     while 0 < len(nearby_pts) < n:
+    #         next = self.nearest_pt(point_list, target)
+    #         point_list.remove(next)
+    #         nearby_pts.append(next)
+    #     return nearby_pts
     
     def collision(self, start, end, dist):
         '''checks for a collision between a proposed path segment and obstacles on the map'''
-        collides, divs, path_pix = False, int(round(4*dist)), []
-        
-        # x_quads, y_quads = [], []
-        # start_quad = [int(start[0]//self.rrt_step_size), int(start[1]//self.rrt_step_size)]
-        # end_quad = [int(end[0]//self.rrt_step_size), int(end[1]//self.rrt_step_size)]
-        # if start_quad[0] == end_quad[0]: x_quads.append(start_quad[0])
-        # else: x_quads.extend((start_quad[0], end_quad[0]))
-        # if start_quad[1] == end_quad[1]: y_quads.append(start_quad[1])
-        # else: y_quads.extend((start_quad[1], end_quad[1]))
-        # # self.get_logger().info(str("x quadrants: {}, y quadrants: {}".format(x_quads, y_quads)))
-        
+        collides, divs, path_pix = False, int(round(4*dist)), [] # local f'n variables
+        # Construct lists of points that should intersect with all pixels traversed
         xlist, ylist = np.linspace(start[0], end[0], divs), np.linspace(start[1], end[1], divs)
         path_pix.append([xlist[0], ylist[0]])
-        # end_x, end_y = int(end[0]), int(end[1])
         
+        # Check end point first, return immediatly if fails
         if self.occupancy_grid[int(end[0])][int(end[1])] != 0:
             collides = True
             return collides
         
+        # Build list of pixels traversed
         for i in range(1, divs-1):
             pixel = [round(xlist[i]), round(ylist[i])]
             if not np.array_equiv(path_pix[-1], pixel):
                 path_pix.append(pixel)
-                
+        
+        # Check each pixel in list against the occupancy grid, return immediately if any fail
         for p in path_pix:
             if self.occupancy_grid[int(p[0])][int(p[1])] != 0:
                 collides = True
                 return collides
-                  
-                # for x in x_quads:
-                #     for y in y_quads:                
-                #         for obstacle in self.div_obst[x][y]:
-                #             if np.array_equiv(pixel, obstacle):
-                #                 collides = True
-                #                 return collides
         
-        # self.get_logger().info(str("For start: {} and end: {}, collision found: {}, pixel path is:\n{}".format(start, end, collides, path_pix)))
+        # Return collides - should still be false if reached this point
         return collides
     
     def path_traceback(self, tree):
-        path = []        
-        parent_ptr = len(tree)-1
+        '''Trace a solved RRT tree from the end node back to the root'''
+        # RRT stops adding nodes when it reaches the goal, so the
+        # last eltement of the tree array should be the goal
+        path, parent_ptr = [], len(tree)-1
         cost = tree[parent_ptr][2]
+        
+        # Only node w/no parent should be root - follow parent nodes
+        # back to there and add them to the path in the process
         while not parent_ptr == None:
             path.insert(0, tree[parent_ptr][0])
             parent_ptr = tree[parent_ptr][1]
         return path, cost
 
-
     def map_cb(self, msg): # nav_msgs/msg/OccupancyGrid.msg
         self.map_input, self.start_pose, self.goal_pose, step_size = msg, None, None, self.rrt_step_size
         self.map_width, self.map_height = msg.info.width, msg.info.height
         self.occupancy_grid = np.transpose(np.reshape(msg.data, (msg.info.height, msg.info.width)))
-        self.obstacles = np.argwhere(self.occupancy_grid==100)
-        x_divs = int(self.map_width//step_size) + 1
-        y_divs = int(self.map_height//step_size) + 1
-        self.div_obst = []
-        for i in range(x_divs):
-            self.div_obst.append([])
-            for j in range(y_divs):
-                self.div_obst[i].append([])
-        for obst in self.obstacles:
-            x_quad, y_quad = int(obst[0]//step_size), int(obst[1]//step_size)
-            self.div_obst[x_quad][y_quad].append([obst[0], obst[1]])
-        # self.get_logger().info(str("divided obstacles: {}".format(self.div_obst)))
-        if True: # print statements for debug - set True/False
-            # self.get_logger().info(str("\nobstacles:\n" + str(self.obstacles)))
-            '''# write obstacles list to text file
-            with open("Obstacles.txt", "w") as text_file:
-                for i in range(len(self.obstacles)):
-                    text_file.write("{}\n".format(self.obstacles[i]))
-            '''
-            # self.get_logger().info(str("\noccupancy grid:\n" + str(self.occupancy_grid)))
-            '''# write occupancy grid to text file
-            with open("Occupancy.txt", "w") as text_file:
-                for i in range(self.map_height):
-                    text_file.write("[")
-                    for j in range(self.map_width):
-                        text_file.write("{},".format(self.occupancy_grid[i][j]))
-                    text_file.write("]\n")
-            '''
         # TODO implement map dilation/erosion/whatever for robot clearance
         if False:
             test_point = PointStamped()
@@ -288,6 +267,7 @@ class PathPlan(Node):
                     self.point_test.publish(test_point)   
             self.get_logger().info("Finished publishing test points")
         self.get_logger().info("Map received - waiting on poses")
+        return
 
     def pose_cb(self, msg): # geometry_msgs/msg/PoseWithCovarianceStamped
         if self.map_input == None:
@@ -300,6 +280,7 @@ class PathPlan(Node):
                                        (self.start_pose[0], self.start_pose[1], self.goal_pose[0], self.goal_pose[1])))
             self.plan_path()
         else: self.get_logger().info("Waiting on goal pose")
+        return
 
     def goal_cb(self, msg): # geometry_msgs/msg/PoseStamped
         if self.map_input == None:
@@ -312,15 +293,17 @@ class PathPlan(Node):
                                        (self.start_pose[0], self.start_pose[1], self.goal_pose[0], self.goal_pose[1])))
             self.plan_path()
         else: self.get_logger().info("Waiting on start pose")
+        return
 
     def plan_path(self):
+        self.rrt_tree, self.rrt_path, self.rrt_cost = None, None, np.inf
+        self.rrt_star_tree, self.rrt_star_path, self.rrt_star_cost = None, None, np.inf
         start_time, end_time = time.time(), None
         if self.rrt():
             end_time = time.time()
-            map_msg = self.map_input
-            path, cost = self.path_traceback(self.rrt_tree)
+            path, cost = self.rrt_path, self.rrt_cost
             self.get_logger().info(str("RRT found a path of length {}".format(cost)))
-            self.trajectory.points = [self.pixel_to_xyth(point, map_msg) for point in path]
+            self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path]
             self.traj_pub.publish(self.trajectory.toPoseArray())
             self.trajectory.publish_viz()
         else:
@@ -328,12 +311,28 @@ class PathPlan(Node):
             self.get_logger().info("RRT did not find a path")
         self.get_logger().info(str("time to solution: {} seconds".format(end_time-start_time)))
         
+        if self.run_star and self.rrt_cost < np.inf:
+            start_time = time.time()
+            savings = self.rrt_star()
+            end_time = time.time()
+            path, cost = self.rrt_star_path, self.rrt_star_cost
+            self.get_logger().info(str("RRT* found a path that is {}%\ shorter in {} seconds".format(100*savings/self.rrt_cost, end_time-start_time)))
+            self.get_logger().info("Publishing new path in:")
+            for i in [3, 2, 1]:
+                self.get_logger().info(str(i))
+                time.sleep(1.0)
+            self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path]
+            self.traj_pub.publish(self.trajectory.toPoseArray())
+            self.trajectory.publish_viz()
+            
+        return
+        
     def rrt(self):
         '''implements rrt for a path planning node'''
         r.seed()
         
         # local variables
-        samp_exp = -3 # can cause bugs if raised above zero
+        samp_exp = -1 # can cause bugs if raised above zero
         p, f, solved = 0, 0, False # points placed, failed attempts, solution found
         max_pts, max_step = self.max_rrt_points, self.rrt_step_size
         points = []
@@ -349,12 +348,8 @@ class PathPlan(Node):
             
             # set sample point with goal bias
             if r.random() < self.rrt_goal_bias: sample = (self.goal_pose[0], self.goal_pose[1], self.goal_pose[2])
-            # else:
-            #     while sample == None:
-            #         coord = (r.randint(0, self.map_width-1), r.randint(0, self.map_height-1), None)
-                    # if self.occupancy_grid[coord[0]][coord[1]] == 0: sample = coord
             else: sample = (r.randint(-samp_exp, self.map_width+samp_exp), r.randint(-samp_exp, self.map_height+samp_exp), None)
-            if False:
+            if False: # Published the sampled coordinates
                 sample_xy = self.pixel_to_xyth(sample, self.map_input)
                 sample_point = PointStamped()
                 sample_point.header.frame_id = "map"
@@ -366,7 +361,7 @@ class PathPlan(Node):
             nearest, near_idx, segment_distance = self.nearest_pt(points, sample) # TODO implement a ?more efficient? f'n to find nearest point
             near_coord = nearest[0]
             if near_coord == sample: continue
-            if False:
+            if False: # Publish the coordinates of the nearest existing node
                 near_xy = self.pixel_to_xyth(near_coord, self.map_input)
                 near_point = PointStamped()
                 near_point.header.frame_id = "map"
@@ -381,7 +376,7 @@ class PathPlan(Node):
                 angle = np.arctan2(sample[1]-near_coord[1], sample[0]-near_coord[0])
                 new_coord = (near_coord[0]+round(max_step*np.cos(angle)), near_coord[1]+round(max_step*np.sin(angle)), None)
                 segment_distance = np.sqrt((new_coord[0]-near_coord[0])**2 + (new_coord[1]-near_coord[1])**2)
-            if False:
+            if False: # Publish the coordinates of the proposed new point
                 prop_xy = self.pixel_to_xyth(new_coord, self.map_input)
                 prop_point = PointStamped()
                 prop_point.header.frame_id = "map"
@@ -389,19 +384,19 @@ class PathPlan(Node):
                 prop_point.point.x, prop_point.point.y, prop_point.point.z = prop_xy[0], prop_xy[1], 0.0
                 self.proposed_pub.publish(prop_point)
             
-            # check for collisions on path segment, if no collision then add point to tree.
+            # check for collisions on path segment, if no collision then add point to tree and increment the points count
             if not self.collision(near_coord, new_coord, segment_distance):
                 cost = points[near_idx][2]+segment_distance
                 points.append([new_coord, near_idx, cost])
                 p += 1
-                if False: # publish coordinates of added RRT nodes
+                if False: # Publish the coordinates of the added RRT node
                     xy_coord = self.pixel_to_xyth(new_coord, self.map_input)
                     ros_point = PointStamped()
                     ros_point.header.frame_id = "map"
                     ros_point.header.stamp = self.get_clock().now().to_msg()
                     ros_point.point.x, ros_point.point.y, ros_point.point.z = float(xy_coord[0]), float(xy_coord[1]), 0.0
                     self.point_pub.publish(ros_point)
-            else:
+            else: # otherwise increment the fail count
                 f += 1
                 continue
             
@@ -410,10 +405,40 @@ class PathPlan(Node):
                 self.rrt_tree = points
                 self.rrt_path, self.rrt_cost = self.path_traceback(points)
                 solved = True
+                return solved
                 
-        # TODO actual error handling
+        # TODO actual error handling?
         if not solved: print("No path found in {} attempts".format(p+f))
-        return solved
+        return solved # should be false if we get here
+    
+    def rrt_star(self):
+        points, adj_lists, dist_lists = [elt[:] for elt in self.rrt_tree], [], []
+        updates, num_pts = 1, len(points)
+        
+        # Builds adjacency lists, records distance for each edge
+        for point in points:
+            adj_lists.append(self.within_d(points, point))
+            dists = []
+            for i in adj_lists[-1]:
+                dists.append(np.sqrt((point[0][0]-points[i][0][0])**2+(point[0][1]-points[i][0][1])**2))
+            dist_lists.append(dists)
+        
+        # Update loop - goes until there is nothing else to update
+        while updates > 0:
+            updates = 0
+            for i in range(num_pts):
+                best_parent, best_cost = points[i][1], points[i][2]
+                for j, k in enumerate(adj_lists[i]):
+                    cost = points[k][2] + dist_lists[i][j]
+                    if cost < best_cost:
+                        updates += 1
+                        best_parent, best_cost = k, cost
+                points[i][1], points[i][2] = best_parent, best_cost
+                
+        self.rrt_star_tree = points            
+        self.rrt_star_path, self.rrt_star_cost = self.path_traceback(points)
+        cost_savings = self.rrt_cost - self.rrt_star_cost
+        return cost_savings
 
 def main(args=None):
     rclpy.init(args=args)
