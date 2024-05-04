@@ -1,3 +1,48 @@
+from geometry_msgs.msg import Point
+from visualization_msgs.msg import Marker
+
+class VisualizationTools:
+
+    @staticmethod
+    def plot_line(x, y, publisher, color = (1., 0., 0.), frame = "/base_link"):
+        """
+        Publishes the points (x, y) to publisher
+        so they can be visualized in rviz as
+        connected line segments.
+        Args:
+            x, y: The x and y values. These arrays
+            must be of the same length.
+            publisher: the publisher to publish to. The
+            publisher must be of type Marker from the
+            visualization_msgs.msg class.
+            color: the RGB color of the plot.
+            frame: the transformation frame to plot in.
+        """
+        # Construct a line
+        line_strip = Marker()
+        line_strip.type = Marker.LINE_STRIP
+        line_strip.header.frame_id = frame
+
+        # Set the size and color
+        line_strip.scale.x = 0.1
+        line_strip.scale.y = 0.1
+        line_strip.color.a = 1.
+        line_strip.color.r = color[0]
+        line_strip.color.g = color[1]
+        line_strip.color.g = color[2]
+
+        # Fill the line with the desired values
+        for xi, yi in zip(x, y):
+            p = Point()
+            p.x = xi
+            p.y = yi
+            line_strip.points.append(p)
+
+        # Publish the line
+        publisher.publish(line_strip)
+
+
+
 import rclpy
 import numpy as np
 from ackermann_msgs.msg import AckermannDriveStamped
@@ -7,9 +52,15 @@ from nav_msgs.msg import Odometry
 from rclpy.node import Node
 import tf_transformations as tf
 from std_msgs.msg import Header
+from sympy import symbols, Eq, solve
 
 from .utils import LineTrajectory
 
+class Pose():
+    def __init__(self, x, y, angle):
+        self.x = x
+        self.y = y
+        self.angle = angle
 
 class PurePursuit(Node):
     """ Implements Pure Pursuit trajectory tracking with a fixed lookahead and speed.
@@ -27,9 +78,9 @@ class PurePursuit(Node):
         # self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
 
-        self.lookahead = 1.0  # FILL IN #
-        self.speed = 1.0  # FILL IN #
-        self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
+        self.lookahead = 2.0  # FILL IN #
+        self.speed = 1.5  # FILL IN #
+        self.wheelbase_length = 0.38  # FILL IN : 15in ish??#
 
         self.trajectory = LineTrajectory("/followed_trajectory")
 
@@ -49,6 +100,8 @@ class PurePursuit(Node):
         self.focal_point_pub = self.create_publisher(Marker,
                                                     self.focal_point,
                                                     1)
+        
+        self.line_pub = self.create_publisher(Marker, "/scan", 1)
 
         self.segments = None
         
@@ -67,6 +120,7 @@ class PurePursuit(Node):
         # math for computing the distance between the segment to the robot
         t = max(0, min(1, np.dot(robot.squeeze()-pt1.squeeze(), pt2.squeeze()-pt1.squeeze())/segment_len))
         projection = pt1 + t*(pt2-pt1)
+
         return np.linalg.norm(projection - robot)
 
     def find_min_distance_robot_to_segment(self, pose):
@@ -90,14 +144,15 @@ class PurePursuit(Node):
         Step 2 of function: Iterate through every segment starting at min_distance_index
         and see if we can find a valid goal point for each one of them
         """
-        # self.get_logger().info(f"min_distance_index: {min_distance_index}")
+        self.get_logger().info(f"min_distance_index: {min_distance_index}")
         for i in range(min_distance_index, len(self.segments)):
             segment = self.segments[i]
             soln = self.compute_math_for_segment(pose, segment)
             if soln is not None:
                 self.get_logger().info(f"soln found segment # {i}")
                 return soln
-        # self.get_logger().info(f"No solution found for segment {segment}")
+        self.get_logger().info(f"No solution found for segment {segment}")
+        return self.compute_math_for_segment(pose, self.segments[i])
     
     def check_angle(self, robot_angle, check_point, robot_point):
         """Helper function for step 2"""
@@ -127,8 +182,6 @@ class PurePursuit(Node):
     #     slope = (pt2_y - pt1_y) / (pt2_x - pt1_x)  # add EPSILON to avoid division by zero
     #     y_intercept = pt1_y - slope * pt1_x
 
-    #     from sympy import symbols, Eq, solve
-
     #     x, y = symbols('x y')
 
     #     eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, self.lookahead**2)
@@ -154,8 +207,8 @@ class PurePursuit(Node):
         Helper function for Step 2
         """
         pt1_x, pt1_y, pt2_x, pt2_y, _, _ = segment
-        pt1 = np.array([[pt1_x, pt1_y]])
-        pt2 = np.array([[pt2_x, pt2_y]])
+        # pt1 = np.array([[pt1_x, pt1_y]])
+        # pt2 = np.array([[pt2_x, pt2_y]])
 
         robot_x, robot_y, angle = pose.x, pose.y, pose.angle
 
@@ -165,6 +218,8 @@ class PurePursuit(Node):
 
         x = np.linspace(min(pt1_x, pt2_x), max(pt1_x, pt2_x), 100)
         y = slope * x + y_intercept
+
+        VisualizationTools.plot_line(x,y, self.line_pub, frame="/base_link", color=(0.0, 1.0, 1.0))
 
         # Calculate the distance between robot pose and each point on the line
         distances = np.sqrt((x - robot_x)**2 + (y - robot_y)**2)
@@ -194,31 +249,30 @@ class PurePursuit(Node):
     #     return np.arctan(float(dy)/float(dx))
 
     def drive_angle(self, pose, goal_point):
-        dx = float(goal_point[0] - pose.x)
-        pose_point = np.array([float(pose.x), float(pose.y)])
-        goal_point = np.array(goal_point)
-        l_d = np.linalg.norm(goal_point-pose_point)
-        R = (l_d**2)/(2*dx)
-        alpha = np.arcsin(l_d/(2*R))
-        K = 2*np.sin(alpha)/l_d
-        steering_angle = np.arctan(K*self.wheelbase_length)
-        return steering_angle
-
         # dx = float(goal_point[0] - pose.x)
-        # dy = float(goal_point[1] - pose.y)
-        # robot_angle = pose.angle
-        # rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
-        #                             [np.sin(-robot_angle), np.cos(-robot_angle)]])
+        # pose_point = np.array([float(pose.x), float(pose.y)])
+        # goal_point = np.array(goal_point)
+        # l_d = np.linalg.norm(goal_point-pose_point)
+        # R = (l_d**2)/(2*dx)
+        # alpha = np.arcsin(l_d/(2*R))
+        # K = 2*np.sin(alpha)/l_d
+        # steering_angle = np.arctan(K*self.wheelbase_length)
+        # return steering_angle
+
+        dx = float(goal_point[0] - pose.x)
+        dy = float(goal_point[1] - pose.y)
+        robot_angle = pose.angle
+        rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
+                                    [np.sin(-robot_angle), np.cos(-robot_angle)]])
         # # self.get_logger().info(f"Value of rotation_matrix: {rotation_matrix}")
         # # self.get_logger().info(f"Shape of rotation_matrix: {rotation_matrix.shape}")
         # # self.get_logger().info(f"Value of v: {v}")
         # # self.get_logger().info(f"Shape of v: {v.shape}")
-        # w = rotation_matrix @ np.array([[dx], [dy]])
+        w = rotation_matrix @ np.array([[dx], [dy]])
 
-        # th = np.arctan(w[0][0]/w[1][0])
+        th = np.arctan(w[0][0]/w[1][0])
         # return th
-        # lookahead_dist = np.sqrt(dx**2 + dy**2)
-        # return np.arctan(2*self.wheelbase_length*np.sin(th)/lookahead_dist)
+        return np.arctan2(2*self.wheelbase_length*np.sin(th),self.lookahead)
 
     def calculate_curvature(self, points):
         # Fit a circle to the points and calculate the radius of curvature
@@ -245,7 +299,7 @@ class PurePursuit(Node):
 
         # Calculate curvature (1/radius)
         curvature = 1.0 / radius
-        self.get_logger().info(f"################# curvature is: {curvature} #################")
+        # self.get_logger().info(f"################# curvature is: {curvature} #################")
         return curvature
 
     # def adjust_lookahead(self, lookahead, curvature):
@@ -307,24 +361,24 @@ class PurePursuit(Node):
         filtered_points = [reference_point]
 
         for point in self.trajectory.points[1:]:
-            if np.linalg.norm(np.array(point) - np.array(reference_point)) >= 1:
+            if np.linalg.norm(np.array(point) - np.array(reference_point)) >= 1.0:
                 filtered_points.append(point)
                 reference_point = point
 
         self.trajectory.points = filtered_points
         trajectory_length = len(self.trajectory.points)
-        # self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
+        self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
         
         ### STEP 1
         closest_segment_index = self.find_min_distance_robot_to_segment(pose) # gets min distance but also populates self.segments
 
         ### here is where i think we should dynamically change the lookahead distance
         # check the straightness of the path around current goal point *get 3 pts
-        curvature = self.calculate_curvature([pt for pt in self.segments[closest_segment_index:closest_segment_index+3][1]])
-        if curvature < 0.2: # idk what number this should actually be; if this is the curviest 
-            self.lookahead*=1.3 # if straight, big lookahead
-        else:
-            self.lookahead*=0.7
+        # curvature = self.calculate_curvature([pt for pt in self.segments[closest_segment_index:closest_segment_index+3][1]])
+        # if curvature < 0.2: # idk what number this should actually be; if this is the curviest 
+        #     self.lookahead*=1.3 # if straight, big lookahead
+        # else:
+        #     self.lookahead*=0.7
 
         ### STEP 2
         goal_point = self.segment_iteration(pose, closest_segment_index)
@@ -341,6 +395,8 @@ class PurePursuit(Node):
             drive_msg.drive.steering_angle = driving_angle
             self.get_logger().info(f"Driving angle is: {driving_angle}")
             self.drive_pub.publish(drive_msg)
+        else:
+            self.get_logger().info(f"Goal point was none :(")
 
 
     def trajectory_callback(self, msg):
