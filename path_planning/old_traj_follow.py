@@ -2,12 +2,11 @@ import rclpy
 import numpy as np
 from ackermann_msgs.msg import AckermannDriveStamped
 from visualization_msgs.msg import Marker
-from geometry_msgs.msg import PoseArray, PoseStamped, Point, Quaternion
+from geometry_msgs.msg import PoseArray, Point
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 import tf_transformations as tf
 from std_msgs.msg import Header
-import time
 
 from .utils import LineTrajectory
 
@@ -25,23 +24,17 @@ class PurePursuit(Node):
         super().__init__("trajectory_follower")
         self.declare_parameter('odom_topic', "default")
         self.declare_parameter('drive_topic', "default")
-        self.declare_parameter('segment_resolution', 0.1)
-        
-        
-        self.seg_res = self.get_parameter('segment_resolution').value
+
         # self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         # self.drive_topic = self.get_parameter('drive_topic').get_parameter_value().string_value
         print("hello")
         self.odom_topic = "/odom"
         self.drive_topic = "/drive"
         self.focal_point = "/focal_point"
-        self.debug_robot_pose = "/debug/pose"
-        self.debug_eta_angle = "/debug/eta"
-        # self.debug_point = "/debug_point"
+        self.debug_point = "/debug_point"
 
-        self.lookahead = 2.0  # FILL IN #
-        self.speed = 4.0  # FILL IN #
-        # self.speed = 0.2  # FILL IN #
+        self.lookahead = 1.0  # FILL IN #
+        self.speed = 0.20  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
         self.trajectory = LineTrajectory("/followed_trajectory")
@@ -63,34 +56,63 @@ class PurePursuit(Node):
                                                     self.focal_point,
                                                     1)
         
-        # self.debug_pub = self.create_publisher(Marker,
-        #                                        self.debug_point,
-        #                                        1)
+        self.debug_pub = self.create_publisher(Marker,
+                                               self.debug_point,
+                                               1)
         
-        # self.line_pub = self.create_publisher()
-        self.pose_pub = self.create_publisher(PoseStamped,
-                                              self.debug_robot_pose,
-                                              1)
-        
-        self.eta_pub = self.create_publisher(PoseStamped,
-                                             self.debug_eta_angle,
-                                             1)
+        self.line_pub = self.create_publisher()
 
-        self.initialized_traj = False
         self.segments = None
-        self.position = None
         
         
+    def plot_line(x, y, publisher, color = (1., 0., 0.), frame = "/base_link"):
+        """
+        Publishes the points (x, y) to publisher
+        so they can be visualized in rviz as
+        connected line segments.
+        Args:
+            x, y: The x and y values. These arrays
+            must be of the same length.
+            publisher: the publisher to publish to. The
+            publisher must be of type Marker from the
+            visualization_msgs.msg class.
+            color: the RGB color of the plot.
+            frame: the transformation frame to plot in.
+        """
+        # Construct a line
+        line_strip = Marker()
+        line_strip.type = Marker.LINE_STRIP
+        line_strip.header.frame_id = frame
+
+        # Set the size and color
+        line_strip.scale.x = 0.1
+        line_strip.scale.y = 0.1
+        line_strip.color.a = 1.
+        line_strip.color.r = color[0]
+        line_strip.color.g = color[1]
+        line_strip.color.g = color[2]
+
+        # Fill the line with the desired values
+        for xi, yi in zip(x, y):
+            p = Point()
+            p.x = xi
+            p.y = yi
+            line_strip.points.append(p)
+
+        # Publish the line
+        publisher.publish(line_strip)
+
     def find_min_distance_for_segment(self, row):
         """
         Helper function for Step 1: Find minimum distance for EACH segment
         """
-        pt1_x, pt1_y, pt2_x, pt2_y, segment_len, _ = row
+        pt1_x, pt1_y, pt2_x, pt2_y, robot_x, robot_y = row
         pt1 = np.array([[pt1_x, pt1_y]])
         pt2 = np.array([[pt2_x, pt2_y]])
-        robot = np.array([[self.position]])
+        robot = np.array([[robot_x, robot_y]])
 
-        if segment_len <= 0.001:
+        segment_len = np.linalg.norm(pt1 - pt2)
+        if segment_len == 0:
             return np.linalg.norm(pt1 - robot) # any of the points works because segment has no len
 
         t = max(0, min(1, np.dot(robot.squeeze()-pt1.squeeze(), pt2.squeeze()-pt1.squeeze())/segment_len))
@@ -101,10 +123,16 @@ class PurePursuit(Node):
         """
         Step 1: Find segment index WITH the minimum distance, return the index
         """
-        self.position = np.array((pose.x, pose.y))
+        traj_pts = self.trajectory.points
+        position = pose.x, pose.y
+        robot_pts_array = np.vstack([np.array(position)] * (len(traj_pts) - 1))
+        segments = np.hstack((np.array(traj_pts[:-1]), np.array(traj_pts[1:]), robot_pts_array))
 
-        distances = np.apply_along_axis(self.find_min_distance_for_segment, 1, self.segments)
+        self.segments = segments
+
+        distances = np.apply_along_axis(self.find_min_distance_for_segment, 1, segments)
         min_distance_index = np.argmin(distances)
+
         return min_distance_index
 
     def segment_iteration(self, pose, min_distance_index):
@@ -113,12 +141,13 @@ class PurePursuit(Node):
         and see if we can find a valid goal point for each one of them
         """
         # self.get_logger().info(f"min_distance_index: {min_distance_index}")
-        # self.get_logger().info("starting segment iteration")
-        for i in range(min_distance_index, len(self.trajectory.points)):
-            dist_ahead = np.linalg.norm(self.trajectory.points[i]-self.trajectory.points[min_distance_index])
-            if dist_ahead >= self.lookahead or i == len(self.trajectory.points)-1:
-                return self.trajectory.points[i]
-        self.get_logger().info(f"No solution found for segment {min_distance_index}")
+        for i in range(min_distance_index, len(self.segments)):
+            segment = self.segments[i]
+            soln = self.compute_math_for_segment(pose, segment)
+            if soln is not None:
+                self.get_logger().info(f"soln found segment # {i}")
+                return soln
+        # self.get_logger().info(f"No solution found for segment {segment}")
 
     
     def check_angle(self, robot_angle, check_point, robot_point):
@@ -134,32 +163,70 @@ class PurePursuit(Node):
         w = rotation_matrix @ v.T
         return w[0][0]>0
 
+
+    def compute_math_for_segment(self, pose, segment):
+        """
+        Helper function for Step 2
+        """
+        pt1_x, pt1_y, pt2_x, pt2_y, _, _ = segment
+        pt1 = np.array([[pt1_x, pt1_y]])
+        pt2 = np.array([[pt2_x, pt2_y]])
+
+        robot_x, robot_y, angle = pose.x, pose.y, pose.angle
+
+        # Calculate the slope and y-intercept for the line
+        slope = (pt2_y - pt1_y) / (pt2_x - pt1_x)  # add EPSILON to avoid division by zero
+        y_intercept = pt1_y - slope * pt1_x
+
+        from sympy import symbols, Eq, solve
+
+        x, y = symbols('x y')
+
+        eq1 = Eq( (x - robot_x)**2 + (y - robot_y)**2, self.lookahead**2)
+        eq2 = Eq(y - (slope * x + y_intercept), 0)
+
+        solutions = solve((eq1,eq2), (x, y))
+        decimal_solutions = np.array([(sol[0].evalf(), sol[1].evalf()) for sol in solutions])
+
+        for soln in decimal_solutions:
+            if soln[0].is_real and soln[1].is_real:
+                if self.check_angle(angle, soln, np.array([[robot_x, robot_y]])):
+                    ### Also check if the soln is within the segment
+                    soln_x, soln_y = float(soln[0]), float(soln[1])
+                    if ((pt1_x <= soln_x <= pt2_x) or (pt2_x <= soln_x <= pt1_x)) and ((pt1_y <= soln_y <= pt2_y) or (pt2_y <= soln_y <= pt1_y)):
+                        return soln
+        # self.get_logger().info(f"Pose: x={pose.x}, y={pose.y}, theta={pose.angle}")
+        # self.get_logger().info(f"Segment: {segment}")
+        # self.get_logger().info(f"Equations: {eq1}, {eq2}")
+        return None
+
+    # def drive_angle(self, pose, goal_point):
+    #     """
+    #     Step 3: given a goal point and a pose, drive to it
+    #     """
+    #     dx = goal_point[0] - pose.x
+    #     dy = goal_point[1] - pose.y
+    #     # self.get_logger().info(f"Value of dx: {dx}")
+    #     # self.get_logger().info(f"Value of dy: {dy}")
+    #     # self.get_logger().info(f"{type(dx)}")
+    #     return np.arctan(float(dy)/float(dx))
+
     def drive_angle(self, pose, goal_point):
         dx = float(goal_point[0] - pose.x)
         dy = float(goal_point[1] - pose.y)
-        goal_angle = np.arctan2(dy, dx)
         robot_angle = pose.angle
-        # self.get_logger().info(f"goal angle is {goal_angle}, robot angle is {robot_angle}")
+        rotation_matrix = np.array([[np.cos(-robot_angle), -np.sin(-robot_angle)],
+                                    [np.sin(-robot_angle), np.cos(-robot_angle)]])
+        # self.get_logger().info(f"Value of rotation_matrix: {rotation_matrix}")
+        # self.get_logger().info(f"Shape of rotation_matrix: {rotation_matrix.shape}")
+        # self.get_logger().info(f"Value of v: {v}")
+        # self.get_logger().info(f"Shape of v: {v.shape}")
+        w = rotation_matrix @ np.array([[dx], [dy]])
 
-        
-        eta = goal_angle - robot_angle
-        if abs(eta) <= np.pi: pass # self.get_logger().info(f"eta is {eta}")
-        elif eta > np.pi:
-            # old_eta = eta
-            eta -= 2*np.pi
-            # self.get_logger().info(f"eta was overvalued. old eta was {old_eta}, new eta is {eta}")
-        else:
-            # old_eta = eta
-            eta += 2*np.pi
-            # self.get_logger().info(f"eta was undervalued. old eta was {old_eta}, new eta is {eta}")
-            
-        eta_marker = eta + robot_angle
-        eta_cap = np.clip(eta, -np.pi/2, np.pi/2)
-        # self.get_logger().info(f"eta is {eta}, clipped eta is {eta_cap}")
-        
-        theta = np.arctan((2*self.wheelbase_length*np.sin(eta_cap))/(self.lookahead))
-        # self.get_logger().info(f"theta is {theta}")
-        return theta, eta_marker
+        th = np.arctan(w[0][0]/w[1][0])
+        return th
+        # lookahead_dist = np.sqrt(dx**2 + dy**2)
+        # return np.arctan(2*self.wheelbase_length*np.sin(th)/lookahead_dist)
     
     def debug_marker():
         # self.get_logger().info("Before Publishing start point")
@@ -223,94 +290,58 @@ class PurePursuit(Node):
         return header
 
     def pose_callback(self, odom_msg):
-        if not self.initialized_traj: return
+        odom_euler = tf.euler_from_quaternion((odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y, odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w))
         
-        odom_euler = tf.euler_from_quaternion((odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y,
-                                               odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w))
         pose = Pose(odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, odom_euler[2])
+
+        if len(self.trajectory.points) == 0:
+            return
+        
+        ### PRE-STEP 1: Preprocess trajectory.points:
+        reference_point = self.trajectory.points[0]
+        filtered_points = [reference_point]
+
+        for point in self.trajectory.points[1:]:
+            if np.linalg.norm(np.array(point) - np.array(reference_point)) >= 1:
+                filtered_points.append(point)
+                reference_point = point
+
+        self.trajectory.points = filtered_points
+        trajectory_length = len(self.trajectory.points)
+        self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
         
         ### STEP 1
         closest_segment_index = self.find_min_distance_robot_to_segment(pose)
 
         ### STEP 2
         goal_point = self.segment_iteration(pose, closest_segment_index)
+
         
         ### STEP 3
         if goal_point is not None:
             self.publish_marker(goal_point)
-            driving_angle, eta = self.drive_angle(pose, goal_point)
-            if True:
-                debug_pose = PoseStamped()
-                debug_pose.pose = odom_msg.pose.pose
-                debug_pose.header = odom_msg.header
-                self.pose_pub.publish(debug_pose)
-                debug_eta = PoseStamped()
-                qe = Quaternion()
-                qe.x, qe.y, qe.z, qe.w = tf.quaternion_from_euler(0.0, 0.0, eta)
-                debug_eta.pose.position.x = pose.x
-                debug_eta.pose.position.y = pose.y
-                debug_eta.pose.position.z = 0.0
-                debug_eta.pose.orientation = qe
-                debug_eta.header = self.make_header("/map")
-                self.eta_pub.publish(debug_eta)
+            driving_angle = self.drive_angle(pose, goal_point)
             # self.get_logger().info(str("Pose {}, Goal Point {}".foramt(pose, goal_point)))
 
             ### STEP 4
             drive_msg = AckermannDriveStamped()
             drive_msg.drive.speed = self.speed
             drive_msg.drive.steering_angle = driving_angle
-            # self.get_logger().info(f"Driving angle is: {driving_angle}")
+            self.get_logger().info(f"Driving angle is: {driving_angle}")
             self.drive_pub.publish(drive_msg)
-            
-            # time.sleep(0.5)
 
 
     def trajectory_callback(self, msg):
         self.get_logger().info(f"Receiving new trajectory {len(msg.poses)} points")
-        self.initialized_traj = False
+
         self.trajectory.clear()
+        # converting trajectory to LineTrajectory format???
         self.trajectory.fromPoseArray(msg)
         self.trajectory.publish_viz(duration=0.0)
-        if len(self.trajectory.points) == 0:
-            return
-        
-        ### PRE-STEP 1: Preprocess trajectory.points:
-        init_point, scnd_point, last_point = np.array(self.trajectory.points[0]), np.array(self.trajectory.points[1]), np.array(self.trajectory.points[-1])
-        init_vector = scnd_point - init_point
-        init_angle = np.arctan2(init_vector[1], init_vector[0])
-        filtered_points = np.asarray([init_point])
-        # self.get_logger().info(str("filtered points so far: {}".format(filtered_points)))
-        
-        prev_point, prev_angle = scnd_point, init_angle
-        
-        for point in self.trajectory.points[2:]:
-            this_point = np.array(point)
-            segment_vect = this_point - prev_point
-            segment_angle = np.arctan2(segment_vect[1], segment_vect[0])
-            if abs(segment_angle - prev_angle) >= 0.000001:
-                filtered_points = np.concatenate((filtered_points, [prev_point]), axis=0)
-                prev_angle = segment_angle
-            prev_point = this_point
-        filtered_points = np.concatenate((filtered_points, [last_point]), axis=0)
-        # self.get_logger().info(str("filtered points so far: {}".format(filtered_points)))
-        
-        reconstructed_traj, resolution, prev_point = np.asarray([init_point]), self.seg_res, filtered_points[0]
-        for point in filtered_points[1:]:
-            segment_length = np.linalg.norm(point - prev_point)
-            segment_divs = int(round(segment_length/resolution))
-            xlist, ylist = np.linspace(prev_point[0], point[0], segment_divs), np.linspace(prev_point[1], point[1], segment_divs+1)
-            for i in range(1, len(xlist)):
-                reconstructed_traj = np.concatenate((reconstructed_traj, [[xlist[i], ylist[i]]]), axis=0)
-            prev_point = point
-        # self.get_logger().info(str("filtered points so far: {}".format(reconstructed_traj)))
-
-        self.trajectory.points = reconstructed_traj
-        starts, ends = np.array(reconstructed_traj[:-1]), np.array(reconstructed_traj[1:])
-        seg_lengths = np.vstack([ends - starts])
-        self.segments = np.hstack((np.array(reconstructed_traj[:-1]), np.array(reconstructed_traj[1:]), seg_lengths))
-        trajectory_length = len(self.trajectory.points)
+        # flag, but where used??
         self.initialized_traj = True
-        self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
+
+    ### STEP 1: Get current position of vehicle
 
 def main(args=None):
     rclpy.init(args=args)
