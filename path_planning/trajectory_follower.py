@@ -6,7 +6,7 @@ from geometry_msgs.msg import PoseArray, PoseStamped, Point, Quaternion
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 import tf_transformations as tf
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Bool
 import time
 
 from .utils import LineTrajectory
@@ -39,47 +39,71 @@ class PurePursuit(Node):
         self.debug_eta_angle = "/debug/eta"
         # self.debug_point = "/debug_point"
 
-        self.lookahead = 2.0  # FILL IN #
+        self.lookahead = 1.50  # FILL IN #
         self.speed = 4.0  # FILL IN #
         # self.speed = 0.2  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
         self.trajectory = LineTrajectory("/followed_trajectory")
 
-        self.traj_sub = self.create_subscription(PoseArray,
-                                                 "/trajectory/current",
-                                                 self.trajectory_callback,
-                                                 1)
-
-        self.drive_pub = self.create_publisher(AckermannDriveStamped,
-                                                    self.drive_topic,
-                                                    1)
-        self.odom_sub = self.create_subscription(Odometry, 
-                                                 self.odom_topic, 
-                                                 self.pose_callback, 
-                                                 1)
+        self.traj_sub = self.create_subscription(
+            PoseArray,
+            "/trajectory/current",
+            self.trajectory_callback,
+            1
+            )
         
-        self.focal_point_pub = self.create_publisher(Marker,
-                                                    self.focal_point,
-                                                    1)
+        self.update_status_sub = self.create_subscription(
+            Bool,
+            "/trajectory/updating",
+            self.status_callback,
+            1
+            )
+
+        self.drive_pub = self.create_publisher(
+            AckermannDriveStamped,
+            self.drive_topic,
+            1
+            )
+        
+        self.odom_sub = self.create_subscription(
+            Odometry, 
+            self.odom_topic, 
+            self.pose_callback, 
+            1
+            )
+        
+        self.focal_point_pub = self.create_publisher(
+            Marker,
+            self.focal_point,
+            1
+            )
         
         # self.debug_pub = self.create_publisher(Marker,
         #                                        self.debug_point,
         #                                        1)
         
         # self.line_pub = self.create_publisher()
-        self.pose_pub = self.create_publisher(PoseStamped,
-                                              self.debug_robot_pose,
-                                              1)
+        self.pose_pub = self.create_publisher(
+            PoseStamped,
+            self.debug_robot_pose,
+            1
+            )
         
-        self.eta_pub = self.create_publisher(PoseStamped,
-                                             self.debug_eta_angle,
-                                             1)
+        self.eta_pub = self.create_publisher(
+            PoseStamped,
+            self.debug_eta_angle,
+            1
+            )
 
         self.initialized_traj = False
+        self.planner_updating = False
         self.segments = None
         self.position = None
         
+        
+    def status_callback(self, msg):
+        self.planner_updating = msg.data
         
     def find_min_distance_for_segment(self, row):
         """
@@ -239,7 +263,7 @@ class PurePursuit(Node):
         if goal_point is not None:
             self.publish_marker(goal_point)
             driving_angle, eta = self.drive_angle(pose, goal_point)
-            if True:
+            if False:
                 debug_pose = PoseStamped()
                 debug_pose.pose = odom_msg.pose.pose
                 debug_pose.header = odom_msg.header
@@ -257,7 +281,13 @@ class PurePursuit(Node):
 
             ### STEP 4
             drive_msg = AckermannDriveStamped()
-            drive_msg.drive.speed = self.speed
+            new_speed = self.speed
+            goal_dist = np.linalg.norm(goal_point - np.array((pose.x, pose.y)))
+            # self.get_logger().info(f"Current dist to goal is {goal_dist:.2f}")
+            if goal_dist < 0.9*self.lookahead:
+                new_speed = 2*goal_dist
+            if self.planner_updating or goal_dist < 0.1: new_speed = 0.0
+            drive_msg.drive.speed = new_speed
             drive_msg.drive.steering_angle = driving_angle
             # self.get_logger().info(f"Driving angle is: {driving_angle}")
             self.drive_pub.publish(drive_msg)
