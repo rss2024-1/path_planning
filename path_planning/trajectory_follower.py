@@ -39,7 +39,7 @@ class PurePursuit(Node):
         self.debug_eta_angle = "/debug/eta"
         # self.debug_point = "/debug_point"
 
-        self.lookahead = 1.50  # FILL IN #
+        self.lookahead = 1.0  # FILL IN #
         self.speed = 4.0  # FILL IN #
         # self.speed = 0.2  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
@@ -296,7 +296,7 @@ class PurePursuit(Node):
 
 
     def trajectory_callback(self, msg):
-        self.get_logger().info(f"Receiving new trajectory {len(msg.poses)} points")
+        # self.get_logger().info(f"Receiving new trajectory {len(msg.poses)} points")
         self.initialized_traj = False
         self.trajectory.clear()
         self.trajectory.fromPoseArray(msg)
@@ -340,7 +340,7 @@ class PurePursuit(Node):
         self.segments = np.hstack((np.array(reconstructed_traj[:-1]), np.array(reconstructed_traj[1:]), seg_lengths))
         trajectory_length = len(self.trajectory.points)
         self.initialized_traj = True
-        self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
+        # self.get_logger().info(f"Length of the trajectory is: {trajectory_length}")
 
 def main(args=None):
     rclpy.init(args=args)

@@ -3,6 +3,7 @@ import numpy as np
 import random as r
 import tf_transformations as tf
 from rclpy.node import Node
+from queue import PriorityQueue
 
 assert rclpy
 from std_msgs.msg import Bool
@@ -11,6 +12,20 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 from .utils import LineTrajectory
 import time
 
+from dataclasses import dataclass, field
+from typing import Any
+
+@dataclass(order=True)
+class QueueItem:
+    priority: int
+    item: Any=field(compare=False)
+    
+class Path():
+    def __init__(self, path, cost):
+        self.path = path
+        self.cost = cost
+        self.start_pose = None
+        self.goal_pose = None
 
 class PathPlan(Node):
     """ Listens for goal pose published by RViz and uses it to plan a path from
@@ -23,12 +38,14 @@ class PathPlan(Node):
         self.declare_parameter('odom_topic', "default")
         self.declare_parameter('map_topic', "default")
         self.declare_parameter('initial_pose_topic', "default")
-        self.declare_parameter('map_dilate', 10) # number of pixels to dilate obstacles on map to give clearance for the robot
+        self.declare_parameter('map_dilate', 10) # integer number of pixels to dilate obstacles on map to give clearance for the robot
+        self.declare_parameter('internode_distance', 4) # integer number of pixels to space between nodes while building graph; 1 pixel = 0.05 meters irl
         
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
         self.map_topic = self.get_parameter('map_topic').get_parameter_value().string_value
         self.initial_pose_topic = self.get_parameter('initial_pose_topic').get_parameter_value().string_value
         self.map_dilate = self.get_parameter('map_dilate').value
+        self.node_dist = self.get_parameter('internode_distance').value
         
         ''' # Parameters for rrt
         # self.declare_parameter('rrt_points', 3e3) # maximum allowed size of rrt tree
@@ -88,6 +105,18 @@ class PathPlan(Node):
             self.odom_cb,
             10
         )
+        
+        self.graph_pub = self.create_publisher(
+            PointStamped,
+            "/a_star/nodes",
+            10
+        )
+        
+        self.visiting_pub = self.create_publisher(
+            PointStamped,
+            "/a_star/visiting",
+            10
+        )
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
         
@@ -125,13 +154,17 @@ class PathPlan(Node):
         self.map_input, self.map_width, self.map_height, self.map_res = None, None, None, None
         self.occupancy_grid, self.goal_pose, self.start_pose, self.current_pose = None, None, None, None
         
-        self.update = False
+        self.graph = dict()
+        # self.path_index, self.path_list = 0, []
+        
+        # self.update = False
         # self.rrt_tree, self.rrt_path, self.rrt_cost = None, None, np.inf
         # self.rrt_star_tree, self.rrt_star_path, self.rrt_star_cost = None, None, np.inf
     
 
-    def pixel_to_xyth(self, coord, msg): 
-        u, v, pix_th = coord[0], coord[1], coord[2]
+    def pixel_to_xyth(self, coord, msg):
+        u, v, pix_th = coord[0], coord[1], None
+        if len(coord) == 3: pix_th = coord[2]
         resolution = msg.info.resolution
         position = msg.info.origin.position
         orientation = msg.info.origin.orientation
@@ -156,7 +189,8 @@ class PathPlan(Node):
         return (x, y, theta)
     
     def xyth_to_pixel(self, coord, msg): 
-        x, y, theta = coord[0], coord[1], coord[2]
+        x, y, theta = coord[0], coord[1], None
+        if len(coord) == 3: theta = coord[2]
         orntn = msg.info.origin.orientation
         res = msg.info.resolution
         map_x = msg.info.origin.position.x
@@ -176,11 +210,75 @@ class PathPlan(Node):
         
         return (pixel_x, pixel_y, pixel_th)
     
+    def build_graph(self):
+        d = self.node_dist # pixel distance between graph nodes
+        nodes = dict() # initialize dictionary to build graph
+        
+        # build a dictionary ("nodes") of each open point (node)
+        for i in range(0, self.map_width-1, d):
+            for j in range(0, self.map_height-1, d):
+                if self.occupancy_grid[i][j] == 0:
+                    nodes[(i,j)] = dict()
+        
+        # build adjacency lists/dicts ("nodes[node]") for each open point
+        for node in nodes.keys():
+            x1, y1 = node
+            # directly adjacent nodes
+            for x2, y2 in [(d,0), (0,d), (-d,0), (0,-d)]:
+                adj_node, dist = (x1+x2, y1+y2), float(d)
+                if (adj_node in nodes.keys()):
+                    if node in nodes[adj_node].keys(): nodes[node][adj_node] = nodes[adj_node][node]
+                    elif not self.collision(node, adj_node, dist): nodes[node][adj_node] = dist
+                    else: continue
+            # diagonally adjacent nodes, causes suboptimal paths for some reason that I don't fully understand
+            # for x2, y2 in [(d,d), (-d,d), (-d,-d), (d,-d)]:
+            #     adj_node, dist = (x1+x2, y1+y2), d*np.sqrt(2)
+            #     if (adj_node in nodes.keys()):
+            #         if node in nodes[adj_node].keys(): nodes[node][adj_node] = nodes[adj_node][node]
+            #         elif not self.collision(node, adj_node, dist): nodes[node][adj_node] = dist
+            #         else: continue
+
+        # assign graph to global variable and return its size
+        self.graph = nodes
+        return len(nodes)
+    
+    def collision(self, start, end, dist):
+        '''checks for a collision between a proposed path segment and obstacles on the map'''
+        collides, divs, path_pix = False, int(2*dist), [] # local f'n variables
+        # Construct lists of points that should intersect with all pixels traversed
+        
+        xlist, ylist = np.linspace(start[0], end[0], divs), np.linspace(start[1], end[1], divs)
+        path_pix.append([xlist[0], ylist[0]])
+        
+        # Check end point first, return immediatly if fails
+        if self.occupancy_grid[int(end[0])][int(end[1])] != 0:
+            collides = True
+            return collides
+        
+        # Build list of pixels traversed
+        for i in range(1, divs-1):
+            pixel = [round(xlist[i]), round(ylist[i])]
+            if not np.array_equiv(path_pix[-1], pixel):
+                path_pix.append(pixel)
+        
+        # Check each pixel in list against the occupancy grid, return immediately if any fail
+        for p in path_pix:
+            if self.occupancy_grid[int(p[0])][int(p[1])] != 0:
+                collides = True
+                return collides
+        
+        # Return collides - should still be false if reached this point
+        return collides
+        
     def map_cb(self, msg): # nav_msgs/msg/OccupancyGrid.msg
         self.map_input, self.start_pose, self.goal_pose = msg, None, None
         self.map_width, self.map_height, self.map_res = msg.info.width, msg.info.height, msg.info.resolution
         self.occupancy_grid = np.transpose(np.reshape(msg.data, (msg.info.height, msg.info.width)))
         
+        self.get_logger().info(f"Starting map import and graph construction")
+        start_time = time.time()
+        
+        # dilate obstacles on map for robot clearance
         # self.map_dilate = 0 # skip map dilation
         if self.map_dilate > 0:        
             from scipy.ndimage import binary_dilation
@@ -193,46 +291,67 @@ class PathPlan(Node):
 
             # Apply the dilated mask back to the map, setting these pixels to 100
             self.occupancy_grid[dilated_wall_mask] = 100
+            self.get_logger().info(f"Map obstacles dilated by {self.map_dilate} pixels")
         else: pass
-            
-        if False:
+        
+        # build the graph to run searchs on
+        num_nodes = self.build_graph()
+        if num_nodes > 0: self.get_logger().info(f"Graph constructed with {num_nodes} nodes")
+        
+        run_time = time.time() - start_time
+        self.get_logger().info(f"Map import took {run_time} seconds")
+        
+        if False: # publishers for debug/development
+            start_time = time.time()
             test_point = PointStamped()
             test_point.header.frame_id = "map"
             self.get_logger().info("Publishing test points")
-            # for i in [1, 865, 1729]:
-            #     for j in [1, 650, 1299]:
-            #         xy = self.pixel_to_xyth((i,j,None), self.map_input)
-            #         self.get_logger().info("Publishing point at ({},{})".format(xy[0],xy[1]))
-            #         test_point.header.stamp = self.get_clock().now().to_msg()
-            #         test_point.point.x, test_point.point.y, test_point.point.z = xy[0], xy[1], 0.0
-                    # self.point_test.publish(test_point)
-            grid = self.occupancy_grid
-            x_pix, y_pix = len(grid)-1, len(grid[0])-1
-            r_divs, region = 5, 1
-            for i in range(int(x_pix*(region/r_divs)), int(x_pix*((region+1)/r_divs))):
-                for j in range(y_pix):
-                    is_edge = False
-                    if grid[i][j] == 100: # r.random() > 0.5 and
-                        for k in [-1, 1]:
-                            if grid[i+k][j] == 0:
-                                is_edge: True
-                                break
-                        for l in [-1, 1]:
-                            if grid[i][j+l] == 0:
-                                is_edge = True
-                                break
-
-                    # if grid[i][j] == 100 and r.random() > 0.98:
-                    if is_edge and r.random() > 0.5:
-                        xy = self.pixel_to_xyth((i+1,j-2,None), self.map_input)
-                        # self.get_logger().info("Publishing point at ({},{})".format(xy[0],xy[1]))
+            if False: # points to check relative map orientation
+                for i in [1, int(self.map_height/2)]:
+                    for j in [1, int(self.map_width/2)]:
+                        xy = self.pixel_to_xyth((i,j,None), self.map_input)
+                        self.get_logger().info("Publishing point at ({},{})".format(xy[0],xy[1]))
                         test_point.header.stamp = self.get_clock().now().to_msg()
                         test_point.point.x, test_point.point.y, test_point.point.z = xy[0], xy[1], 0.0
-                        time.sleep(0.01)
                         self.point_test.publish(test_point)
-                        # self.point_test.publish(test_point)
-                        time.sleep(0.02)
-            self.get_logger().info("Finished publishing test points")
+            if False:
+                grid = self.occupancy_grid
+                x_pix, y_pix = len(grid)-1, len(grid[0])-1
+                r_divs, region = 5, 1
+                for i in range(int(x_pix*(region/r_divs)), int(x_pix*((region+1)/r_divs))):
+                    for j in range(y_pix):
+                        is_edge = False
+                        if grid[i][j] == 100: # r.random() > 0.5 and
+                            for k in [-1, 1]:
+                                if grid[i+k][j] == 0:
+                                    is_edge: True
+                                    break
+                            for l in [-1, 1]:
+                                if grid[i][j+l] == 0:
+                                    is_edge = True
+                                    break
+                        # if grid[i][j] == 100 and r.random() > 0.98:
+                        if is_edge and r.random() > 0.5:
+                            xy = self.pixel_to_xyth((i+1,j-2,None), self.map_input)
+                            # self.get_logger().info("Publishing point at ({},{})".format(xy[0],xy[1]))
+                            test_point.header.stamp = self.get_clock().now().to_msg()
+                            test_point.point.x, test_point.point.y, test_point.point.z = xy[0], xy[1], 0.0
+                            time.sleep(0.01)
+                            self.point_test.publish(test_point)
+                            # self.point_test.publish(test_point)
+                            time.sleep(0.02)
+            if False: # publish graph nodes
+                for coord in self.graph.keys():
+                    if 800 <= coord[0] <= 1000 and 850 <= coord[1] <= 1050:
+                        node_xy = self.pixel_to_xyth(coord, self.map_input)
+                        graph_node = PointStamped()
+                        graph_node.header.frame_id = "/map"
+                        graph_node.header.stamp = self.get_clock().now().to_msg()
+                        graph_node.point.x, graph_node.point.y, graph_node.point.z = node_xy[0], node_xy[1], 0.0
+                        self.graph_pub.publish(graph_node)
+                        time.sleep(0.01)
+            run_time = time.time() - start_time
+            self.get_logger().info(f"Finished publishing test points in {run_time} seconds")
         self.get_logger().info("Map received - waiting on poses")
         return
 
@@ -246,15 +365,15 @@ class PathPlan(Node):
         # self.rrt_tree, self.rrt_path, self.rrt_cost = None, None, np.inf
         # self.rrt_star_tree, self.rrt_star_path, self.rrt_star_cost = None, None, np.inf
         xyth = (msg.pose.pose.position.x, msg.pose.pose.position.y, 2*np.arccos(msg.pose.pose.orientation.w)-np.pi)
-        ind_start = self.xyth_to_pixel(xyth, self.map_input)
-        if self.occupancy_grid[ind_start[0]][ind_start[1]] != 0:
+        indic_start = self.xyth_to_pixel(xyth, self.map_input)
+        if self.occupancy_grid[indic_start[0]][indic_start[1]] != 0:
             update_status = Bool()
             update_status.data = True
             for i in range(3): self.traj_update_pub.publish(update_status)
             time.sleep(0.2)
             self.get_logger().info("Invalid start pose")
             return
-        self.start_pose = ind_start
+        self.start_pose = indic_start
         
         # Check if a goal pose has been published, if yes start path planning
         if not self.goal_pose == None:
@@ -271,11 +390,11 @@ class PathPlan(Node):
         
         # Check if goal position is valid
         xyth =  (msg.pose.position.x, msg.pose.position.y, 2*np.arccos(msg.pose.orientation.w)-np.pi)
-        ind_goal = self.xyth_to_pixel(xyth, self.map_input)
-        if self.occupancy_grid[ind_goal[0]][ind_goal[1]] != 0:
+        indic_goal = self.xyth_to_pixel(xyth, self.map_input)
+        if self.occupancy_grid[indic_goal[0]][indic_goal[1]] != 0:
             self.get_logger().info("Invalid goal pose")
             return
-        self.goal_pose = ind_goal
+        self.goal_pose = indic_goal
         
         # Check if a start pose has been published, if yes start path planning
         if not self.start_pose == None:
@@ -300,11 +419,37 @@ class PathPlan(Node):
         update_status.data = True
         for i in range(3): self.traj_update_pub.publish(update_status)
         time.sleep(0.2)
-        # self.rrt_tree, self.rrt_path, self.rrt_cost = None, None, np.inf
-        # self.rrt_star_tree, self.rrt_star_path, self.rrt_star_cost = None, None, np.inf
         self.update = False
         
-        # Call to A* goes here
+        ####### Call to A* goes here: #######    
+        # run A* with timer
+        start_time = time.time()
+        path, cost = self.a_star(self.start_pose, self.goal_pose)
+        run_time = time.time() - start_time
+        if path == None or cost == np.inf:
+            self.get_logger().info(f"A* did not find a solution after searching for {run_time:.2f} seconds")
+            return
+
+        self.get_logger().info(f"A* found a path of length {cost * self.map_res:.2f} meters in {run_time:.2f} seconds")
+        self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path]
+        self.traj_pub.publish(self.trajectory.toPoseArray())
+        self.trajectory.publish_viz()
+        
+        if True:
+            start_time = time.time()
+            path_s, cost_s = self.smooth_path(path)
+            run_time = time.time() - start_time
+            self.get_logger().info(f"Path smoothing found a path of length {cost_s*self.map_res:.2f} meters in {run_time:.2f} seconds")
+            self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path_s]
+            self.traj_pub.publish(self.trajectory.toPoseArray())
+            self.trajectory.publish_viz()
+        
+        # new_path = Path(path, cost)
+        # new_path.start_pose = self.start_pose
+        # new_path.goal_pose = self.goal_pose
+        # self.path_list.append(new_path)
+
+        
         
         ''' # Call to rrt
         # run rrt with timer
@@ -346,6 +491,112 @@ class PathPlan(Node):
         '''
         
         return
+    
+    def nearest_node(self, point_input):
+        # get all the valid nodes at the corners of the square in which the point resides
+        point, d, nearby, = np.array((point_input[0], point_input[1])), self.node_dist, []
+        exes = [int(np.floor(point[0]/d)*d), int(np.ceil(point[0]/d)*d)]
+        whys = [int(np.floor(point[1]/d)*d), int(np.ceil(point[1]/d)*d)]
+        for x in exes:
+            for y in whys:
+                try:
+                    if len(self.graph[(x,y)]) > 0: nearby.append(np.array([x,y]))
+                except: pass
+        
+        # calculate the closest of the nearby nodes 
+        best_node, best_dist = None, np.inf
+        for node in nearby:
+            this_dist = np.linalg.norm(node - point)
+            if this_dist < best_dist:
+                best_node = node
+                best_dist = this_dist
+        
+        return tuple(best_node)
+    
+    def a_star(self, start_pose, goal_pose):
+        start_node = self.nearest_node(start_pose)
+        if start_node[0] == None:
+            self.get_logger().info("Invalid start pose")
+            return None, np.inf
+        goal_node = self.nearest_node(goal_pose)
+        if goal_node[0] == None:
+            self.get_logger().info("Invalid goal pose")
+            return None, np.inf
+        goal_pt = np.array(goal_node) # goal as np array for calculations
+        costs, visited = dict(), [] # initialize visited list and a dict to store cost to each node
+        
+        # initialize queue with starting node as first item
+        max_q, costs[start_node] = len(self.graph), 0
+        queue, item1 = PriorityQueue(maxsize=max_q), QueueItem(priority=0, item=[start_node])
+        # item1.priority, item1.item = 0, [start_node]
+        queue.put(item1)
+        # self.get_logger().info(f"queue is currently {queue}")
+        
+        # retrieve and expand nodes from the priority queue
+        while not queue.empty():
+            current_item = queue.get()
+            node_path = current_item.item # recover the path from the queue item
+            node = node_path[-1]
+            node_cost = costs[node]
+            if node in visited: continue
+            else:
+                visited.append(node) # add the node to the visited list
+                if False: # Publish the node being visited
+                    node_xy = self.pixel_to_xyth(node, self.map_input)
+                    visit_point = PointStamped()
+                    visit_point.header.frame_id = "/map"
+                    visit_point.header.stamp = self.get_clock().now().to_msg()
+                    visit_point.point.x, visit_point.point.y, visit_point.point.z = node_xy[0], node_xy[1], 0.0
+                    self.visiting_pub.publish(visit_point)
+                    time.sleep(0.02)
+                # self.get_logger().info(f"Running A* - current queue size is about {queue.qsize()}, current item is {current_item}, visited list has {len(visited)} nodes")
+                # expand the node by adding all adjacent nodes to the queue
+                for adjacent in self.graph[node].keys():
+                    if adjacent in visited: continue # node already visited, don't add to queue
+                    else: # add the adjacent node to the queue
+                        heuristic = np.linalg.norm(goal_pt - np.array(adjacent)) # admissible heuristic -> euclidian distance to goal point
+                        costs[adjacent] = node_cost + self.graph[adjacent][node]
+                        this_cost = costs[adjacent]
+                        this_priority = int(round((this_cost + heuristic)*1000000000.0))
+                        this_path = node_path.copy() 
+                        this_path.append(adjacent)
+                        if adjacent == goal_node: return this_path, this_cost
+                        this_item = QueueItem(this_priority, this_path)
+                        queue.put(this_item)
+                        # self.get_logger().info(f"Adding {adjacent} to queue with priority {this_priority} and path {this_path}")
+                        # self.get_logger().info(f"Adding {adjacent} to queue with cost {this_cost} and heuristic {heuristic}")
+        # exhausted queue without solution, return no path with infinite cost
+        return None, np.inf
+    
+    def smooth_path(self, path):
+        i, num_nodes, new_path, new_cost = 0, len(path), [path[0]], 0
+        while i < num_nodes-1:
+            i = self.lookahead(path, i, 0, num_nodes-1)
+            new_path.append(path[i])
+        for j in range(1, len(new_path)):
+            new_cost += np.linalg.norm(np.array(new_path[j]) - np.array(new_path[j-1]))
+        return new_path, new_cost
+    
+    def lookahead(self, path, index, forward_min, forward_max):
+        # base case return
+        if forward_min == forward_max: return index + forward_max
+        
+        # guard against index out of bounds
+        f_min, f_max, max_i = forward_min, forward_max, len(path)-1
+        if index + forward_max > max_i: f_max = max_i - index
+        
+        # calculate intermediate values
+        f_avg = int(np.ceil((f_min+f_max)/2))
+        start_pt, end_pt = np.array(path[index]), np.array(path[index+f_avg])
+        segment_dist = np.linalg.norm(end_pt - start_pt)
+        
+        # recursive call
+        if not self.collision(start_pt, end_pt, segment_dist): return self.lookahead(path, index, f_avg, f_max)
+        else: return self.lookahead(path, index, f_min, f_avg-1)
+            
+            
+            
+        return
   
     ''' # Functions from RRT
     # def nearest_pt(self, points, target):
@@ -378,37 +629,6 @@ class PathPlan(Node):
     #         point_list.remove(next)
     #         nearby_pts.append(next)
     #     return nearby_pts
-    
-    # def collision(self, start, end, dist):
-    #     ''checks for a collision between a proposed path segment and obstacles on the map''
-    #     collides, divs, path_pix = False, int(round(4*dist)), [] # local f'n variables
-    #     # Construct lists of points that should intersect with all pixels traversed
-        
-    #     # self.get_logger().info(str("(x1,y1) = ({},{}), (x2,y2) = ({},{}), num divs = {}".format(start[0], start[1], end[0], end[1], divs)))
-    #     xlist, ylist = np.linspace(start[0], end[0], divs), np.linspace(start[1], end[1], divs)
-    #     path_pix.append([xlist[0], ylist[0]])
-        
-    #     # Check end point first, return immediatly if fails
-    #     if self.occupancy_grid[int(end[0])][int(end[1])] != 0:
-    #         collides = True
-    #         return collides
-        
-    #     # Build list of pixels traversed
-    #     for i in range(1, divs-1):
-    #         if self.update: return
-    #         pixel = [round(xlist[i]), round(ylist[i])]
-    #         if not np.array_equiv(path_pix[-1], pixel):
-    #             path_pix.append(pixel)
-        
-    #     # Check each pixel in list against the occupancy grid, return immediately if any fail
-    #     for p in path_pix:
-    #         if self.update: return
-    #         if self.occupancy_grid[int(p[0])][int(p[1])] != 0:
-    #             collides = True
-    #             return collides
-        
-    #     # Return collides - should still be false if reached this point
-    #     return collides
     
     # def path_traceback(self, tree):
     #     ''Trace a solved RRT tree from the end node back to the root''
