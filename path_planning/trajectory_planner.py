@@ -46,6 +46,7 @@ class PathPlan(Node):
         self.initial_pose_topic = self.get_parameter('initial_pose_topic').get_parameter_value().string_value
         self.map_dilate = self.get_parameter('map_dilate').value
         self.node_dist = self.get_parameter('internode_distance').value
+        self.lane_trajectory = [(-19.99921417236328, 1.3358267545700073), (-18.433984756469727, 7.590575218200684), (-15.413466453552246, 10.617328643798828), (-6.186201572418213, 21.114534378051758), (-5.5363922119140625, 25.662315368652344), (-19.717021942138672, 25.677358627319336), (-20.30797004699707, 26.20694923400879), (-20.441822052001953, 33.974945068359375), (-55.0716438293457, 34.07769775390625), (-55.30067825317383, 1.4463690519332886)]
         
         ''' # Parameters for rrt
         # self.declare_parameter('rrt_points', 3e3) # maximum allowed size of rrt tree
@@ -119,6 +120,7 @@ class PathPlan(Node):
         )
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
+        self.lane_trajectory_viz = LineTrajectory(node=self, viz_namespace="/lane_trajectory")
         
         ''' # Debug publishers for rrt
         # > Debug/extra publishers below <
@@ -294,6 +296,24 @@ class PathPlan(Node):
             self.get_logger().info(f"Map obstacles dilated by {self.map_dilate} pixels")
         else: pass
         
+         #ADDING LANE TRAJECTORY AS OBSTACLE FOR FINAL CHALLENGE 
+        lane_traj_pixels = [self.xyth_to_pixel((point[0], point[1]), msg) for point in self.lane_trajectory]
+        lane_pixels = []
+        for ix in range(len(lane_traj_pixels)):
+            if ix < len(lane_traj_pixels) - 1:
+                point1 = lane_traj_pixels[ix]
+                point2 = lane_traj_pixels[ix+1]
+                lane_segment_pixels = self.bresenham_line_supercover(point1[0], point1[1], point2[0], point2[1])
+                lane_pixels = lane_pixels + lane_segment_pixels
+        for lane_pixel in lane_pixels:
+            self.occupancy_grid[lane_pixel[0]][lane_pixel[1]] = 100
+        #self.occupancy_grid[lane_pixels] = 100
+        self.lane_trajectory_viz.clear()
+        for ix, lane_pixel in enumerate(lane_pixels):
+            xy_lane_cell = self.pixel_to_xyth((lane_pixel[0], lane_pixel[1]), msg)
+            self.lane_trajectory_viz.addPoint(xy_lane_cell)
+        self.lane_trajectory_viz.publish_viz()  
+
         # build the graph to run searchs on
         num_nodes = self.build_graph()
         if num_nodes > 0: self.get_logger().info(f"Graph constructed with {num_nodes} nodes")
@@ -597,6 +617,60 @@ class PathPlan(Node):
             
             
         return
+    
+    def bresenham_line_supercover(self, x0, y0, x1, y1):
+        ystep, xstep = 1, 1
+        error = 0
+        errorprev = 0
+        x, y = x0, y0
+        dx, dy = x1-x0, y1-y0
+        line = [(x, y)]
+        if (dy < 0): 
+            ystep = -1
+            dy = -dy
+        if (dx < 0):
+            xstep = -1
+            dx = -dx 
+        ddy = 2*dy
+        ddx = 2*dx 
+        if (ddx>=ddy):
+            errorprev = dx
+            error = dx
+            for _ in range(dx):
+                    x += xstep
+                    error += ddy
+                    if error >= ddx:
+                        y += ystep
+                        error -= ddx
+                        if (error + errorprev < ddx):
+                            line.append((x, y-ystep))
+                        elif (error + errorprev > ddx):
+                            line.append((x-xstep, y))
+                        else:
+                            line.append((x, y-ystep))
+                            line.append((x-xstep, y))
+                    line.append((x, y))
+                    errorprev = error
+        else:
+             errorprev = dy
+             error = dy 
+             for _ in range(dy):
+                y += ystep
+                error += ddx
+                if error > ddy:
+                    x += xstep
+                    error -= ddy
+                    if (error + errorprev < ddy):
+                        line.append((x-xstep, y))
+                    elif(error + errorprev > ddy):
+                        line.append((x, y-ystep))
+                    else:
+                        line.append((x-xstep, y))
+                        line.append((x, y-ystep))
+                line.append((x, y))
+                errorprev = error
+        return line
+
   
     ''' # Functions from RRT
     # def nearest_pt(self, points, target):
