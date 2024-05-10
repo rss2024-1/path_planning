@@ -39,7 +39,7 @@ class PurePursuit(Node):
         self.debug_eta_angle = "/debug/eta"
         # self.debug_point = "/debug_point"
 
-        self.lookahead = 1.0  # FILL IN #
+        self.lookahead = 0.80  # FILL IN #
         self.speed = 4.0  # FILL IN #
         # self.speed = 0.2  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#

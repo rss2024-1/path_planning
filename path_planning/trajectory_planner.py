@@ -38,7 +38,7 @@ class PathPlan(Node):
         self.declare_parameter('odom_topic', "default")
         self.declare_parameter('map_topic', "default")
         self.declare_parameter('initial_pose_topic', "default")
-        self.declare_parameter('map_dilate', 10) # integer number of pixels to dilate obstacles on map to give clearance for the robot
+        self.declare_parameter('map_dilate', 6) # integer number of pixels to dilate obstacles on map to give clearance for the robot
         self.declare_parameter('internode_distance', 4) # integer number of pixels to space between nodes while building graph; 1 pixel = 0.05 meters irl
         
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
@@ -277,6 +277,12 @@ class PathPlan(Node):
         self.map_width, self.map_height, self.map_res = msg.info.width, msg.info.height, msg.info.resolution
         self.occupancy_grid = np.transpose(np.reshape(msg.data, (msg.info.height, msg.info.width)))
         
+        for j in range(900, self.map_height):
+            for i in range(860):
+                self.occupancy_grid[i][j] = -1
+            for i in range(970, 1560):
+                self.occupancy_grid[i][j] = -1
+        
         self.get_logger().info(f"Starting map import and graph construction")
         start_time = time.time()
         
@@ -360,9 +366,9 @@ class PathPlan(Node):
                             self.point_test.publish(test_point)
                             # self.point_test.publish(test_point)
                             time.sleep(0.02)
-            if False: # publish graph nodes
+            if True: # publish graph nodes
                 for coord in self.graph.keys():
-                    if 800 <= coord[0] <= 1000 and 850 <= coord[1] <= 1050:
+                    if 0 <= coord[0] <= self.map_width-1 and 850 <= coord[1] <= 1050:
                         node_xy = self.pixel_to_xyth(coord, self.map_input)
                         graph_node = PointStamped()
                         graph_node.header.frame_id = "/map"
