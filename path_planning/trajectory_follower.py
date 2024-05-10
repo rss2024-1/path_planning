@@ -40,7 +40,7 @@ class PurePursuit(Node):
         # self.debug_point = "/debug_point"
 
         self.lookahead = 1.0  # FILL IN #
-        self.speed = 4.0  # FILL IN #
+        self.speed = 3.0  # FILL IN #
         # self.speed = 0.2  # FILL IN #
         self.wheelbase_length = 0.381  # FILL IN : 15in ish??#
 
@@ -63,6 +63,12 @@ class PurePursuit(Node):
         self.drive_pub = self.create_publisher(
             AckermannDriveStamped,
             self.drive_topic,
+            1
+            )
+
+        self.reached_goal_pub = self.create_publisher(
+            Bool,
+            "/reached_goal",
             1
             )
         
@@ -248,7 +254,7 @@ class PurePursuit(Node):
 
     def pose_callback(self, odom_msg):
         if not self.initialized_traj: return
-        
+  
         odom_euler = tf.euler_from_quaternion((odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y,
                                                odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w))
         pose = Pose(odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, odom_euler[2])
@@ -290,6 +296,14 @@ class PurePursuit(Node):
             drive_msg.drive.speed = new_speed
             drive_msg.drive.steering_angle = driving_angle
             # self.get_logger().info(f"Driving angle is: {driving_angle}")
+
+            reached_goal = Bool()
+            if goal_dist < 0.1:
+                reached_goal.data = True
+            else:
+                reached_goal.data = False 
+            self.reached_goal_pub.publish(reached_goal)
+
             self.drive_pub.publish(drive_msg)
             
             # time.sleep(0.5)

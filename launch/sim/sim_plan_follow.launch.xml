@@ -5,4 +5,7 @@
     <node pkg="path_planning" exec="trajectory_follower" name="trajectory_follower">
         <param from="$(find-pkg-share path_planning)/config/sim/sim_config.yaml"/>
     </node>
+    <node pkg="path_planning" exec="basement_point_publisher" name="basement_point_publisher" output="screen">
+        <param from="$(find-pkg-share path_planning)/config/sim/sim_config.yaml"/>
+    </node>
 </launch>

@@ -38,7 +38,7 @@ class PathPlan(Node):
         self.declare_parameter('odom_topic', "default")
         self.declare_parameter('map_topic', "default")
         self.declare_parameter('initial_pose_topic', "default")
-        self.declare_parameter('map_dilate', 10) # integer number of pixels to dilate obstacles on map to give clearance for the robot
+        self.declare_parameter('map_dilate', 5) # integer number of pixels to dilate obstacles on map to give clearance for the robot
         self.declare_parameter('internode_distance', 4) # integer number of pixels to space between nodes while building graph; 1 pixel = 0.05 meters irl
         
         self.odom_topic = self.get_parameter('odom_topic').get_parameter_value().string_value
@@ -47,7 +47,10 @@ class PathPlan(Node):
         self.map_dilate = self.get_parameter('map_dilate').value
         self.node_dist = self.get_parameter('internode_distance').value
         self.lane_trajectory = [(-19.99921417236328, 1.3358267545700073), (-18.433984756469727, 7.590575218200684), (-15.413466453552246, 10.617328643798828), (-6.186201572418213, 21.114534378051758), (-5.5363922119140625, 25.662315368652344), (-19.717021942138672, 25.677358627319336), (-20.30797004699707, 26.20694923400879), (-20.441822052001953, 33.974945068359375), (-55.0716438293457, 34.07769775390625), (-55.30067825317383, 1.4463690519332886)]
-        
+        self.enter_wall = [(-25.3534, -3.56703), (-25.3534, 2.86331)]
+        self.exit_wall = [(-51.9571, -3.179), (-51.9571, 2.4451)]
+        self.shell_run_wall = [(-20.6, 2.46), (-15.4899, 2.31881)]
+
         ''' # Parameters for rrt
         # self.declare_parameter('rrt_points', 3e3) # maximum allowed size of rrt tree
         # self.declare_parameter('samp_free_only', False) # RRT takes samples only from free space; technically correct for RRT, but produces much larger trees under some circumstances
@@ -106,6 +109,12 @@ class PathPlan(Node):
             self.odom_cb,
             10
         )
+
+        self.shell_points_sub = self.create_subscription(
+            PoseArray, 
+            "/shell_points", 
+            self.shell_cb, 
+            1)
         
         self.graph_pub = self.create_publisher(
             PointStamped,
@@ -121,7 +130,13 @@ class PathPlan(Node):
 
         self.trajectory = LineTrajectory(node=self, viz_namespace="/planned_trajectory")
         self.lane_trajectory_viz = LineTrajectory(node=self, viz_namespace="/lane_trajectory")
-        
+        self.enter_trajectory_viz = LineTrajectory(node=self, viz_namespace="/enter_trajectory")
+        self.exit_trajectory_viz = LineTrajectory(node=self, viz_namespace="/exit_trajectory")
+        self.shell_run_close_trajectory_viz = LineTrajectory(node=self, viz_namespace="/shell_run_trajectory")
+        self.shell_paths = []
+        self.shell_goals = []
+        self.shell_wall_pixels = []
+        self.reached_goal = True
         ''' # Debug publishers for rrt
         # > Debug/extra publishers below <
         self.point_pub = self.create_publisher(
@@ -162,7 +177,6 @@ class PathPlan(Node):
         # self.update = False
         # self.rrt_tree, self.rrt_path, self.rrt_cost = None, None, np.inf
         # self.rrt_star_tree, self.rrt_star_path, self.rrt_star_cost = None, None, np.inf
-    
 
     def pixel_to_xyth(self, coord, msg):
         u, v, pix_th = coord[0], coord[1], None
@@ -271,7 +285,7 @@ class PathPlan(Node):
         
         # Return collides - should still be false if reached this point
         return collides
-        
+
     def map_cb(self, msg): # nav_msgs/msg/OccupancyGrid.msg
         self.map_input, self.start_pose, self.goal_pose = msg, None, None
         self.map_width, self.map_height, self.map_res = msg.info.width, msg.info.height, msg.info.resolution
@@ -279,24 +293,8 @@ class PathPlan(Node):
         
         self.get_logger().info(f"Starting map import and graph construction")
         start_time = time.time()
-        
-        # dilate obstacles on map for robot clearance
-        # self.map_dilate = 0 # skip map dilation
-        if self.map_dilate > 0:        
-            from scipy.ndimage import binary_dilation
 
-            # Create a binary mask where 100 (walls) are True
-            wall_mask = self.occupancy_grid == 100
-
-            # Dilate the mask by {self.map_dilate} pixels
-            dilated_wall_mask = binary_dilation(wall_mask, iterations=self.map_dilate)
-
-            # Apply the dilated mask back to the map, setting these pixels to 100
-            self.occupancy_grid[dilated_wall_mask] = 100
-            self.get_logger().info(f"Map obstacles dilated by {self.map_dilate} pixels")
-        else: pass
-        
-         #ADDING LANE TRAJECTORY AS OBSTACLE FOR FINAL CHALLENGE 
+        #ADDING LANE TRAJECTORY AS OBSTACLE FOR FINAL CHALLENGE 
         lane_traj_pixels = [self.xyth_to_pixel((point[0], point[1]), msg) for point in self.lane_trajectory]
         lane_pixels = []
         for ix in range(len(lane_traj_pixels)):
@@ -313,6 +311,58 @@ class PathPlan(Node):
             xy_lane_cell = self.pixel_to_xyth((lane_pixel[0], lane_pixel[1]), msg)
             self.lane_trajectory_viz.addPoint(xy_lane_cell)
         self.lane_trajectory_viz.publish_viz()  
+        
+        # dilate obstacles on map for robot clearance
+        self.map_dilate = 0 # skip map dilation
+        if self.map_dilate > 0:        
+            from scipy.ndimage import binary_dilation
+
+            # Create a binary mask where 100 (walls) are True
+            wall_mask = self.occupancy_grid == 100
+
+            # Dilate the mask by {self.map_dilate} pixels
+            dilated_wall_mask = binary_dilation(wall_mask, iterations=self.map_dilate)
+
+            # Apply the dilated mask back to the map, setting these pixels to 100
+            self.occupancy_grid[dilated_wall_mask] = 100
+            self.get_logger().info(f"Map obstacles dilated by {self.map_dilate} pixels")
+        else: pass
+
+        #Block of non valid regions for final challenge
+        enter_pixel1 = self.xyth_to_pixel((self.enter_wall[0][0], self.enter_wall[0][1]), msg)
+        enter_pixel2 = self.xyth_to_pixel((self.enter_wall[1][0], self.enter_wall[1][1]), msg)
+        enter_wall_pixels = self.bresenham_line_supercover(enter_pixel1[0], enter_pixel1[1], enter_pixel2[0], enter_pixel2[1])
+        
+        self.enter_trajectory_viz.clear()
+        for ix, lane_pixel in enumerate(enter_wall_pixels):
+            xy_lane_cell = self.pixel_to_xyth((lane_pixel[0], lane_pixel[1]), msg)
+            self.enter_trajectory_viz.addPoint(xy_lane_cell)
+        self.enter_trajectory_viz.publish_viz()  
+
+        exit_pixel1 = self.xyth_to_pixel((self.exit_wall[0][0], self.exit_wall[0][1]), msg)
+        exit_pixel2 = self.xyth_to_pixel((self.exit_wall[1][0], self.exit_wall[1][1]), msg)
+        exit_wall_pixels = self.bresenham_line_supercover(exit_pixel1[0], exit_pixel1[1], exit_pixel2[0], exit_pixel2[1])
+        
+        self.exit_trajectory_viz.clear()
+        for ix, lane_pixel in enumerate(exit_wall_pixels):
+            xy_lane_cell = self.pixel_to_xyth((lane_pixel[0], lane_pixel[1]), msg)
+            self.exit_trajectory_viz.addPoint(xy_lane_cell)
+        self.exit_trajectory_viz.publish_viz()  
+
+        wall_pixels = enter_wall_pixels + exit_wall_pixels
+
+        for wall_pixel in wall_pixels:
+            self.occupancy_grid[wall_pixel[0]][wall_pixel[1]] = 100
+        
+        shell_wall_px1 = self.xyth_to_pixel((self.shell_run_wall[0][0], self.shell_run_wall[0][1]), msg)
+        shell_wall_px2 = self.xyth_to_pixel((self.shell_run_wall[1][0], self.shell_run_wall[1][1]), msg)
+        shell_wall_pixels = self.bresenham_line_supercover(shell_wall_px1[0], shell_wall_px1[1], shell_wall_px2[0], shell_wall_px2[1])
+        
+        self.shell_run_close_trajectory_viz.clear()
+        for ix, shell_wall_pixel in enumerate(shell_wall_pixels):
+            xy_shell_wall = self.pixel_to_xyth((shell_wall_pixel[0], shell_wall_pixel[1]), msg)
+            self.shell_run_close_trajectory_viz.addPoint(xy_shell_wall)
+        self.shell_wall_pixels = shell_wall_pixels
 
         # build the graph to run searchs on
         num_nodes = self.build_graph()
@@ -425,16 +475,82 @@ class PathPlan(Node):
         return
     
     def odom_cb(self, odom_msg):
+        reached_goal = False
         if self.start_pose != None:
             odom_euler = tf.euler_from_quaternion((odom_msg.pose.pose.orientation.x, odom_msg.pose.pose.orientation.y,
                                                     odom_msg.pose.pose.orientation.z, odom_msg.pose.pose.orientation.w))
             odom_pose = (odom_msg.pose.pose.position.x, odom_msg.pose.pose.position.y, odom_euler[2])
             new_pose = self.xyth_to_pixel(odom_pose, self.map_input)
             self.current_pose = new_pose
+        if self.goal_pose != None and self.shell_paths:
+            reached_goal = self.reached_goal_point()
+            if reached_goal == True:
+                self.get_logger().info("REACHED GOAL POINT")
+                self.trajectory.points = self.shell_paths.pop(0)
+                self.goal_pose = self.shell_goals.pop(0)
+                self.traj_pub.publish(self.trajectory.toPoseArray())
+                self.trajectory.publish_viz()
+            else:
+                self.get_logger().info("DID NOT REACH GOAL POINT")
 
-    def plan_path(self):
+    def reached_goal_point(self):
+        current = np.array(self.current_pose)
+        goal = np.array(self.goal_pose)
+        distance = np.linalg.norm(current-goal)
+        self.get_logger().info(f"DISTANCE: {distance}")
+        if distance < 7.0:
+            return True
+        return False
+
+    def shell_cb(self, shell_arr_msg):
+        if self.map_input == None:
+            self.get_logger().info("Waiting on map")
+            return
+        if self.start_pose == None:
+            self.get_logger().info("Waiting on start pose")
+            return 
+        
+        original_start_pose = self.start_pose
+        self.goal_pose = self.start_pose
+        shell_poses = shell_arr_msg.poses 
+        shell_poses.append(original_start_pose)
+        
+        for ix, shell_pose in enumerate(shell_poses):
+            if ix == 1:
+                for shell_wall_px in self.shell_wall_pixels:
+                    self.occupancy_grid[shell_wall_px[0]][shell_wall_px[1]] = 100
+                self.shell_run_close_trajectory_viz.publish_viz()
+                self.build_graph()
+            if ix == 3:
+                shell_goal = shell_pose
+            else:
+                shell_xyth = (shell_pose.position.x, shell_pose.position.y, 2*np.arccos(shell_pose.orientation.w)-np.pi)
+                shell_goal = self.xyth_to_pixel(shell_xyth, self.map_input)
+            if self.occupancy_grid[shell_goal[0]][shell_goal[1]] != 0:
+                self.get_logger().info("Invalid shell pose")
+                return
+            self.start_pose = self.goal_pose
+            self.goal_pose = shell_goal
+            self.shell_goals.append(shell_goal)
+            self.get_logger().info(f"Planning path from ({self.start_pose[0]},{self.start_pose[1]}) to ({self.goal_pose[0]},{self.goal_pose[1]})")
+            if ix == 3:
+                self.get_logger().info(f"Driving back to start")
+            else:
+                self.get_logger().info(f"Driving to shell {ix}")
+            self.plan_path(shell_mode=True)
+        
+        #for shell_path in self.shell_paths:
+        self.trajectory.points = self.shell_paths.pop(0)
+        self.start_pose = original_start_pose
+        self.goal_pose = self.shell_goals.pop(0)
+        self.traj_pub.publish(self.trajectory.toPoseArray())
+        self.trajectory.publish_viz()
+
+
+    def plan_path(self, shell_mode=False):
         # reset variables, kill active functions, publish updating status
         self.update = True
+        self.reached_goal = False
         update_status = Bool()
         update_status.data = True
         for i in range(3): self.traj_update_pub.publish(update_status)
@@ -451,18 +567,26 @@ class PathPlan(Node):
             return
 
         self.get_logger().info(f"A* found a path of length {cost * self.map_res:.2f} meters in {run_time:.2f} seconds")
-        self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path]
-        self.traj_pub.publish(self.trajectory.toPoseArray())
-        self.trajectory.publish_viz()
+        # if shell_mode:
+        #     shell_traj_points = [self.pixel_to_xyth(point, self.map_input) for point in path]
+        #     self.shell_paths.append(shell_traj_points)
+        # else:
+        #     self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path]
+        #     self.traj_pub.publish(self.trajectory.toPoseArray())
+        #     self.trajectory.publish_viz()
         
         if True:
             start_time = time.time()
             path_s, cost_s = self.smooth_path(path)
             run_time = time.time() - start_time
             self.get_logger().info(f"Path smoothing found a path of length {cost_s*self.map_res:.2f} meters in {run_time:.2f} seconds")
-            self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path_s]
-            self.traj_pub.publish(self.trajectory.toPoseArray())
-            self.trajectory.publish_viz()
+            if shell_mode:
+                shell_traj_points = [self.pixel_to_xyth(point, self.map_input) for point in path_s]
+                self.shell_paths.append(shell_traj_points)
+            else:
+                self.trajectory.points = [self.pixel_to_xyth(point, self.map_input) for point in path_s]
+                self.traj_pub.publish(self.trajectory.toPoseArray())
+                self.trajectory.publish_viz()
         
         # new_path = Path(path, cost)
         # new_path.start_pose = self.start_pose

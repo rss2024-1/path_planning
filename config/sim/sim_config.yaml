@@ -8,3 +8,7 @@ trajectory_follower:
   ros__parameters:
     odom_topic: "/odom"
     drive_topic: "/drive"
+basement_point_publisher:
+  ros__parameters:
+    odom_topic: "/odom"
+    drive_topic: "/drive"
